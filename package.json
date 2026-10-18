@@ -1,0 +1,22 @@
+{
+  "name": "theve-avionics",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "THEVE // TACS-8 — a cinematic cockpit avionics UI kit and playable air-combat showcase.",
+  "scripts": {
+    "dev": "pnpm --filter @theve/showcase dev",
+    "build": "pnpm --filter @theve/ui build && pnpm --filter @theve/showcase build",
+    "typecheck": "pnpm --filter @theve/ui typecheck && pnpm --filter @theve/showcase typecheck",
+    "test": "pnpm --filter @theve/ui test",
+    "preview": "pnpm --filter @theve/showcase preview --host 127.0.0.1 --port 4173",
+    "verify:ui": "node scripts/verify-ui.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1",
+    "typescript": "~5.9.3"
+  }
+}

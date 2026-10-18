@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vite/
+coverage/
+playwright-report/
+test-results/
+*.local
+.DS_Store
+Thumbs.db
+docs/screenshots/*.tmp.png
+*.tgz
+*.tsbuildinfo

@@ -1,0 +1,99 @@
+/* THEVE // TACS-8 — foundation tokens
+   Every visual decision lives here so the kit can be re-skinned without touching components. */
+:root,
+.tv-root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --tv-void: #04070c;
+  --tv-void-2: #060b12;
+  --tv-deep: #07131d;
+  --tv-deep-2: #0a1a26;
+  --tv-panel: rgba(8, 22, 32, 0.82);
+  --tv-panel-strong: rgba(6, 17, 25, 0.94);
+  --tv-panel-soft: rgba(14, 34, 46, 0.55);
+  --tv-scrim: rgba(2, 6, 10, 0.72);
+
+  /* lines */
+  --tv-line: rgba(99, 243, 255, 0.22);
+  --tv-line-soft: rgba(137, 188, 203, 0.14);
+  --tv-line-hot: rgba(99, 243, 255, 0.52);
+  --tv-line-red: rgba(255, 77, 90, 0.42);
+
+  /* signal */
+  --tv-cyan: #63f3ff;
+  --tv-cyan-dim: #2c8e9e;
+  --tv-cyan-deep: #123c46;
+  --tv-ice: #e8f8fc;
+  --tv-mute: #86a3ae;
+  --tv-mute-deep: #56717c;
+  --tv-amber: #ffb547;
+  --tv-amber-deep: #6b4719;
+  --tv-red: #ff4d5a;
+  --tv-red-deep: #5c1a21;
+  --tv-green: #74ffb0;
+  --tv-green-deep: #17462e;
+  --tv-sun: #ff7a3d;
+
+  /* typography — system stacks only, zero font payload */
+  --tv-font-display: "Bahnschrift SemiCondensed", "Bahnschrift", "DIN Alternate", "Arial Narrow",
+    "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  --tv-font-mono: "Cascadia Mono", "JetBrains Mono", "Consolas", "SFMono-Regular", ui-monospace, monospace;
+  --tv-font-text: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --tv-tracking-caps: 0.18em;
+  --tv-tracking-wide: 0.3em;
+
+  /* spacing */
+  --tv-space-1: 4px;
+  --tv-space-2: 8px;
+  --tv-space-3: 12px;
+  --tv-space-4: 16px;
+  --tv-space-5: 24px;
+  --tv-space-6: 32px;
+  --tv-space-7: 48px;
+  --tv-space-8: 64px;
+  --tv-space-9: 96px;
+
+  /* geometry */
+  --tv-radius-sm: 2px;
+  --tv-radius: 4px;
+  --tv-radius-lg: 8px;
+  --tv-chamfer: 10px;
+  --tv-hairline: 1px;
+
+  /* motion */
+  --tv-ease: cubic-bezier(0.16, 0.84, 0.3, 1);
+  --tv-ease-snap: cubic-bezier(0.2, 1.4, 0.4, 1);
+  --tv-dur-fast: 120ms;
+  --tv-dur-base: 220ms;
+  --tv-dur-slow: 420ms;
+  --tv-dur-cine: 900ms;
+
+  /* effects */
+  --tv-glow-cyan: 0 0 18px rgba(99, 243, 255, 0.28);
+  --tv-glow-red: 0 0 20px rgba(255, 77, 90, 0.3);
+  --tv-glow-amber: 0 0 18px rgba(255, 181, 71, 0.26);
+  --tv-hud-shadow: 0 0 12px rgba(99, 243, 255, 0.32);
+  --tv-text-shadow-hard: 0 1px 2px rgba(0, 0, 0, 0.8);
+  --tv-blur-glass: blur(14px) saturate(125%);
+
+  /* layering */
+  --tv-z-world: 0;
+  --tv-z-hud: 30;
+  --tv-z-console: 40;
+  --tv-z-overlay: 60;
+  --tv-z-toast: 80;
+
+  /* HUD density (overridden by data-density) */
+  --tv-hud-font: 11px;
+  --tv-hud-gap: 10px;
+  --tv-hud-edge: clamp(14px, 1.5vw, 28px);
+}
+
+.tv-root[data-density="compact"] {
+  --tv-hud-font: 10px;
+  --tv-hud-gap: 7px;
+  --tv-hud-edge: clamp(10px, 1vw, 18px);
+  --tv-space-5: 18px;
+  --tv-space-6: 24px;
+}

@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "types": ["vite/client"],
+    "paths": {
+      "@theve/ui": ["../../packages/theve-ui/src/index.ts"],
+      "@theve/ui/three": ["../../packages/theve-ui/src/three/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
