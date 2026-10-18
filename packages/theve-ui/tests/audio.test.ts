@@ -21,9 +21,17 @@ describe('AudioEngine fallbacks', () => {
         missileWarning: true,
         bossActive: false,
         elapsed: 4,
+        maneuver: 'highG',
+        airbrake: true,
+        assistEngaged: 2,
       }),
     ).not.toThrow();
     expect(() => engine.handleEvent({ type: 'flare' })).not.toThrow();
+    expect(() => engine.handleEvent({ type: 'maneuver-start', id: 'cobra' })).not.toThrow();
+    expect(() =>
+      engine.handleEvent({ type: 'assist-toggle', id: 'steering', enabled: true }),
+    ).not.toThrow();
+    expect(() => engine.handleEvent({ type: 'stall' })).not.toThrow();
     expect(() => engine.dispose()).not.toThrow();
   });
 });

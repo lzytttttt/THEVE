@@ -11,11 +11,21 @@ import {
   WeaponRack,
   WingmanStatus,
 } from './systems';
+import {
+  FlightAidStrip,
+  GLoadMeter,
+  LockSteeringCue,
+  ManeuverBanner,
+  StartupChecklist,
+} from './maneuvers';
 
 export interface CockpitHudProps {
   className?: string;
   showComms?: boolean;
   showWeaponRack?: boolean;
+  /** The v0.2 first-flight checklist. On by default. */
+  showChecklist?: boolean;
+  showAidStrip?: boolean;
 }
 
 /**
@@ -26,6 +36,8 @@ export function CockpitHud({
   className,
   showComms = true,
   showWeaponRack = true,
+  showChecklist = true,
+  showAidStrip = true,
 }: CockpitHudProps) {
   const snapshot = useCockpit();
   const actions = useCockpitActions();
@@ -88,6 +100,18 @@ export function CockpitHud({
           />
         ))}
         <LockReticle target={selected} />
+        <LockSteeringCue />
+      </div>
+
+      {showAidStrip && (
+        <div className="tv-hud__aid">
+          <FlightAidStrip />
+          <GLoadMeter />
+        </div>
+      )}
+
+      <div className="tv-hud__maneuver">
+        <ManeuverBanner />
       </div>
 
       <MissileWarning warnings={warnings} />
@@ -114,9 +138,15 @@ export function CockpitHud({
 
       {boss && <BossBar boss={boss} className="tv-hud__boss" />}
 
+      {showChecklist && (
+        <div className="tv-hud__tutorial">
+          <StartupChecklist />
+        </div>
+      )}
+
       <div className="tv-hud__footer tv-mono" aria-hidden="true">
-        <span>THEVE // TACS-8</span>
-        <span>FCS NOMINAL · IFF ONLINE · LINK 08</span>
+        <span>THEVE // TACS-8 · FCS {flight.airbrake ? 'BRAKE' : flight.highG ? 'HIGH-G' : 'NOMINAL'}</span>
+        <span>IFF ONLINE · LINK 08</span>
         <span>HDG {Math.round(flight.heading).toString().padStart(3, '0')} · G {flight.gLoad.toFixed(1)}</span>
       </div>
 

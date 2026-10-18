@@ -155,7 +155,13 @@ export class AudioEngine {
       this.engineOscA.frequency.setTargetAtTime(42 + telemetry.throttle * 38, now, 0.2);
       this.engineOscB.frequency.setTargetAtTime(68 + telemetry.throttle * 52, now, 0.2);
     }
-    this.windGain?.gain.setTargetAtTime(active ? 0.012 + speedNorm * 0.05 : 0.002, now, 0.2);
+    this.windGain?.gain.setTargetAtTime(
+      active
+        ? 0.012 + speedNorm * 0.05 + (telemetry.airbrake ? 0.032 : 0) + (telemetry.maneuver ? 0.014 : 0)
+        : 0.002,
+      now,
+      0.2,
+    );
 
     if (this.lockGain) {
       const searching = telemetry.lockState === 'searching';
@@ -253,6 +259,33 @@ export class AudioEngine {
       case 'resupply':
         this.beep(1320, 0.05, 0.025, 'square');
         this.schedule(80, () => this.beep(1760, 0.06, 0.025, 'square'));
+        break;
+      case 'maneuver-start':
+        // Hydraulic whine of the control surfaces slamming to the stops.
+        this.noiseBurst(0.42, 'bandpass', 720, 0.055, 'sfx');
+        this.beep(320, 0.16, 0.03, 'sawtooth', 'sfx');
+        break;
+      case 'maneuver-end':
+        this.noiseBurst(0.22, 'highpass', 1400, 0.03, 'sfx');
+        break;
+      case 'maneuver-blocked':
+        this.beep(260, 0.12, 0.035, 'square', 'warning');
+        break;
+      case 'assist-toggle':
+        this.beep(event.enabled ? 980 : 520, 0.06, 0.028, 'triangle', 'warning');
+        this.schedule(70, () =>
+          this.beep(event.enabled ? 1320 : 380, 0.07, 0.026, 'triangle', 'warning'),
+        );
+        break;
+      case 'assist-engaged':
+        this.beep(1500, 0.035, 0.014, 'sine', 'warning');
+        break;
+      case 'stall':
+        this.noiseBurst(0.34, 'bandpass', 460, 0.05, 'warning');
+        break;
+      case 'tutorial-complete':
+        this.beep(880, 0.06, 0.03, 'square', 'warning');
+        this.schedule(90, () => this.beep(1320, 0.09, 0.03, 'square', 'warning'));
         break;
       default:
         break;

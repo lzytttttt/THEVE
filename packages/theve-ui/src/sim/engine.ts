@@ -8,6 +8,7 @@ import {
   formatClock,
   forwardFromAngles,
   headingFromYaw,
+  lerp,
   normalize,
   RAD,
   randomRange,
@@ -20,15 +21,34 @@ import {
   yawPitchFromDirection,
 } from './math';
 import { sunsetSpearScenario } from './scenario';
+import {
+  buildManeuverStatus,
+  checkManeuverAvailability,
+  MANEUVERS,
+  type ManeuverDefinition,
+} from './maneuvers';
+import {
+  buildAssistStatus,
+  DEFAULT_ASSISTS,
+  normalizeAssists,
+  solveAssists,
+  type AssistSolution,
+} from './assists';
+import { buildTutorialState, createTutorialFlags, type TutorialFlags } from './tutorial';
 import type {
+  AssistId,
+  AssistSettings,
   AudioTelemetry,
   BossHud,
   CockpitSnapshot,
   CommsMessage,
   CommsRole,
   ControlInput,
+  FlightState,
   HudTarget,
   LockState,
+  ManeuverId,
+  ManeuverSnapshot,
   MissionPhase,
   MissionStats,
   Projection,
@@ -38,6 +58,7 @@ import type {
   SimEntity,
   SimEvent,
   SimListener,
+  TutorialStepId,
   Vec3,
   WarningState,
   WeakpointKey,
@@ -53,6 +74,34 @@ const LOCK_RANGE = 3600;
 const LOCK_TIME = 0.9;
 const PLAYER_MAX_HP = 100;
 const RADAR_RANGE = 9000;
+
+/* --- v0.2 handling constants ---------------------------------------- */
+/** Cruise speed at idle / military power / full afterburner. */
+const SPEED_IDLE = 118;
+const SPEED_SPAN = 168;
+const SPEED_AB_BONUS = 38;
+const SPEED_MAX = 330;
+const SPEED_FLOOR = 150;
+/** How much climbing bleeds and diving builds energy. */
+const GRAVITY_BIAS = 46;
+/** Roll inertia: angular acceleration, damping and the resulting rate cap. */
+const ROLL_ACCEL = 13.4;
+const ROLL_DAMP = 6.2;
+const ROLL_RATE_MAX = 3.7;
+/** Pitch is rate-commanded with a first-order lag so the nose has weight. */
+const PITCH_RATE_MAX = 1.06;
+const PITCH_LAG = 8.2;
+const PITCH_LIMIT = 1.35;
+/** Induced drag from pulling and rolling. */
+const PITCH_DRAG = 30;
+const ROLL_DRAG = 4;
+/** How quickly pilot input builds versus how quickly it relaxes. */
+const INPUT_ATTACK = 9.5;
+const INPUT_RELEASE = 6.2;
+const GROUND_FLOOR = 140;
+const CEILING = 14000;
+const TUTORIAL_AUTO_HIDE = 30;
+const TUTORIAL_LINGER = 6;
 const BOSS_WEAKPOINT_HP: Record<WeakpointKey, number> = {
   shieldL: 120,
   shieldR: 120,
@@ -88,6 +137,12 @@ function emptyStats(): MissionStats {
   };
 }
 
+/** Stall floor of the running scripted manoeuvre, if any. */
+function scriptedFloor(scripted: { id: ManeuverId } | null): number | null {
+  if (!scripted) return null;
+  return MANEUVERS[scripted.id].profile?.speedFloor ?? null;
+}
+
 export class CockpitEngine {
   readonly scenario: Scenario;
 
@@ -95,17 +150,22 @@ export class CockpitEngine {
   paused = false;
   elapsed = 0;
 
-  flight = {
+  flight: FlightState = {
     position: vec3(0, 6800, 0),
     yaw: 0,
     pitch: 0,
     roll: 0,
+    rollRate: 0,
+    pitchRate: 0,
     speed: 255,
     throttle: 0.7,
     hp: PLAYER_MAX_HP,
     maxHp: PLAYER_MAX_HP,
     gLoad: 1,
     afterburner: false,
+    airbrake: false,
+    highG: false,
+    postStall: false,
   };
 
   weapons = {
@@ -127,12 +187,39 @@ export class CockpitEngine {
   private input: ControlInput = { pitch: 0, roll: 0, yaw: 0 };
   private inputTarget: ControlInput = { pitch: 0, roll: 0, yaw: 0 };
   private throttleAxis = 0;
+  /** Throttle the pilot last asked for — the flight aids never go below it. */
+  private pilotThrottle = 0.7;
+  private throttleIdle = 0;
+
+  /* --- v0.2 manoeuvres & flight aids --------------------------------- */
+  private sustained: ManeuverId | null = null;
+  private scripted: {
+    id: ManeuverId;
+    time: number;
+    entryPitch: number;
+    entryRoll: number;
+  } | null = null;
+  private scriptedG = 1;
+  private velocityDir: Vec3 | null = null;
+  private travelDir: Vec3 = vec3(0, 0, -1);
+  private assistSettings: AssistSettings = { ...DEFAULT_ASSISTS };
+  private assistMaster = true;
+  private assistSolution: AssistSolution | null = null;
+  private assistAnnounced = new Set<AssistId>();
+  private stallAnnounced = false;
+  private tutorialFlags: TutorialFlags = createTutorialFlags();
+  private tutorialDismissed = false;
+  private tutorialTimer = 0;
+  private tutorialDoneAt: number | null = null;
+  private attitudeSeen = { pitch: false, roll: false };
 
   private selectedId: string | null = null;
   private lockProgress = 0;
   private lockInCone = false;
   private lockWasLocked = false;
   private lockDistance = 0;
+  private lockSteering = 0;
+  private lockElevation = 0;
 
   private gunHeld = false;
   private gunBurst = 0;
@@ -176,12 +263,17 @@ export class CockpitEngine {
       yaw: yawFromHeading(this.scenario.start.heading),
       pitch: 0,
       roll: 0,
+      rollRate: 0,
+      pitchRate: 0,
       speed: this.scenario.start.speed,
       throttle: 0.7,
       hp: PLAYER_MAX_HP,
       maxHp: PLAYER_MAX_HP,
       gLoad: 1,
       afterburner: false,
+      airbrake: false,
+      highG: false,
+      postStall: false,
     };
     this.weapons = {
       selected: 'aam',
@@ -195,6 +287,21 @@ export class CockpitEngine {
     this.input = { pitch: 0, roll: 0, yaw: 0 };
     this.inputTarget = { pitch: 0, roll: 0, yaw: 0 };
     this.throttleAxis = 0;
+    this.pilotThrottle = 0.7;
+    this.throttleIdle = 0;
+    this.sustained = null;
+    this.scripted = null;
+    this.scriptedG = 1;
+    this.velocityDir = null;
+    this.travelDir = vec3(0, 0, -1);
+    this.assistSolution = null;
+    this.assistAnnounced.clear();
+    this.stallAnnounced = false;
+    this.tutorialFlags = createTutorialFlags();
+    this.tutorialDismissed = false;
+    this.tutorialTimer = 0;
+    this.tutorialDoneAt = null;
+    this.attitudeSeen = { pitch: false, roll: false };
     this.entities = [];
     this.effects = [];
     this.projections.clear();
@@ -203,6 +310,8 @@ export class CockpitEngine {
     this.lockInCone = false;
     this.lockWasLocked = false;
     this.lockDistance = 0;
+    this.lockSteering = 0;
+    this.lockElevation = 0;
     this.gunHeld = false;
     this.gunBurst = 0;
     this.gunAccumulator = 0;
@@ -276,20 +385,215 @@ export class CockpitEngine {
       roll: clamp(partial.roll ?? this.inputTarget.roll, -1, 1),
       yaw: clamp(partial.yaw ?? this.inputTarget.yaw, -1, 1),
     };
+    if (partial.pitch !== undefined && Math.abs(this.inputTarget.pitch) >= 0.3) {
+      this.attitudeSeen.pitch = true;
+    }
+    if (partial.roll !== undefined && Math.abs(this.inputTarget.roll) >= 0.3) {
+      this.attitudeSeen.roll = true;
+    }
+    if (this.attitudeSeen.pitch && this.attitudeSeen.roll) this.completeTutorial('attitude');
   }
 
   setThrottle(value: number): void {
-    this.flight.throttle = clamp(value, 0, 1);
+    const next = clamp(value, 0, 1);
+    this.pilotThrottle = next;
+    this.flight.throttle = next;
     this.throttleAxis = 0;
+    this.throttleIdle = 0;
+    this.completeTutorial('throttle');
   }
 
   adjustThrottle(delta: number): void {
-    this.flight.throttle = clamp(this.flight.throttle + delta, 0, 1);
+    const next = clamp(this.flight.throttle + delta, 0, 1);
+    this.pilotThrottle = next;
+    this.flight.throttle = next;
     this.throttleAxis = 0;
+    this.throttleIdle = 0;
+    this.completeTutorial('throttle');
   }
 
   setThrottleAxis(axis: number): void {
     this.throttleAxis = clamp(axis, -1, 1);
+    if (this.throttleAxis !== 0) {
+      this.throttleIdle = 0;
+      this.completeTutorial('throttle');
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.2 manoeuvres & flight aids                                       */
+  /* ------------------------------------------------------------------ */
+
+  setAssists(settings: Partial<AssistSettings>): void {
+    this.assistSettings = normalizeAssists({ ...this.assistSettings, ...settings });
+  }
+
+  setAssist(id: AssistId, enabled: boolean): void {
+    if (this.assistSettings[id] === enabled) return;
+    this.assistSettings = { ...this.assistSettings, [id]: enabled };
+    this.emit({ type: 'assist-toggle', id, enabled: enabled && this.assistMaster });
+    if (!enabled) this.assistAnnounced.delete(id);
+  }
+
+  toggleAssists(): boolean {
+    this.setAssistMaster(!this.assistMaster, true);
+    return this.assistMaster;
+  }
+
+  setAssistMaster(enabled: boolean, announce = false): void {
+    if (this.assistMaster === enabled) return;
+    this.assistMaster = enabled;
+    this.emit({ type: 'assist-toggle', id: 'master', enabled });
+    if (enabled) this.assistAnnounced.clear();
+    if (announce) {
+      this.warn(
+        'system',
+        'caution',
+        enabled ? 'ASSIST ON' : 'ASSIST OFF',
+        enabled ? '辅助驾驶已接通 · Y 切换' : '辅助驾驶已断开 · 全手动',
+        1.6,
+      );
+    }
+  }
+
+  getAssistMaster(): boolean {
+    return this.assistMaster;
+  }
+
+  /** Engages a held manoeuvre (sustained) or ignites a timed profile. */
+  startManeuver(id: ManeuverId): boolean {
+    const definition = MANEUVERS[id];
+    if (!definition) return false;
+    if (!this.canUseWeapons()) return false;
+    if (definition.kind === 'sustained') {
+      if (this.sustained === id) return true;
+      const gate = checkManeuverAvailability(id, {
+        speed: this.flight.speed,
+        altitude: this.flight.position.y,
+        activeManeuver: this.activeManeuver(),
+      });
+      if (!gate.available) {
+        this.blockManeuver(id, gate.blocked);
+        return false;
+      }
+      this.sustained = id;
+    } else {
+      if (this.scripted) return false;
+      const gate = checkManeuverAvailability(id, {
+        speed: this.flight.speed,
+        altitude: this.flight.position.y,
+        activeManeuver: this.activeManeuver(),
+      });
+      if (!gate.available) {
+        this.blockManeuver(id, gate.blocked);
+        return false;
+      }
+      this.scripted = {
+        id,
+        time: 0,
+        entryPitch: this.flight.pitch,
+        entryRoll: this.flight.roll,
+      };
+      this.scriptedG = 1;
+      this.velocityDir = forwardFromAngles(this.flight.yaw, this.flight.pitch);
+      this.breakMissileLock(definition.decoyChance);
+    }
+    this.completeTutorial('maneuver');
+    this.emit({ type: 'maneuver-start', id });
+    return true;
+  }
+
+  endManeuver(id: ManeuverId): void {
+    if (this.sustained !== id) return;
+    this.sustained = null;
+    this.emit({ type: 'maneuver-end', id });
+  }
+
+  isManeuverActive(id: ManeuverId): boolean {
+    return this.activeManeuver() === id;
+  }
+
+  cancelManeuvers(): void {
+    if (this.sustained) {
+      const id = this.sustained;
+      this.sustained = null;
+      this.emit({ type: 'maneuver-end', id });
+    }
+    if (this.scripted) this.finishScripted();
+  }
+
+  dismissTutorial(): void {
+    if (this.tutorialDismissed) return;
+    this.tutorialDismissed = true;
+    this.emit({ type: 'tutorial-dismissed' });
+  }
+
+  restartTutorial(): void {
+    this.tutorialDismissed = false;
+    this.tutorialTimer = 0;
+    this.tutorialDoneAt = null;
+  }
+
+  /** Instantly retargets every hostile missile onto the flares. */
+  private breakMissileLock(chance: number): void {
+    if (chance <= 0) return;
+    let broken = 0;
+    for (const entity of this.entities) {
+      if (entity.kind !== 'missile' || !entity.alive || !entity.missile) continue;
+      if (entity.missile.targetId !== 'player') continue;
+      if (Math.random() >= chance) continue;
+      entity.missile.life = Math.min(entity.missile.life, 0.22);
+      broken += 1;
+    }
+    if (broken > 0) {
+      this.warn('missile', 'caution', 'MISSILE DEFEATED', '机动摆脱 — 导弹失去跟踪', 1.6);
+      this.emit({ type: 'flare' });
+    }
+  }
+
+  private blockManeuver(id: ManeuverId, reason: string | null): void {
+    const label = MANEUVERS[id]?.labelZh ?? '机动';
+    this.warn('system', 'caution', 'MANOEUVRE BLOCKED', `${label} — ${reason ?? '条件不足'}`, 1.4);
+    this.emit({ type: 'maneuver-blocked', id, reason: reason ?? '' });
+  }
+
+  private activeManeuver(): ManeuverId | null {
+    return this.scripted?.id ?? this.sustained;
+  }
+
+  private completeTutorial(id: TutorialStepId): void {
+    if (this.tutorialFlags[id]) return;
+    this.tutorialFlags[id] = true;
+    const state = buildTutorialState(this.tutorialFlags, this.tutorialDismissed, true);
+    if (state.completed >= state.total) {
+      this.tutorialDoneAt = this.elapsed;
+      this.emit({ type: 'tutorial-complete' });
+    }
+  }
+
+  private finishScripted(): void {
+    const active = this.scripted;
+    if (!active) return;
+    this.scripted = null;
+    this.scriptedG = 1;
+    this.velocityDir = null;
+    this.flight.pitch = wrapRadians(this.flight.pitch);
+    this.normalizeAttitude();
+    this.flight.pitchRate = 0;
+    this.flight.rollRate = 0;
+    this.emit({ type: 'maneuver-end', id: active.id });
+  }
+
+  /** (yaw, pitch, roll) and (yaw+π, π-pitch, roll+π) describe one attitude. */
+  private normalizeAttitude(): void {
+    const pitch = this.flight.pitch;
+    if (Math.abs(pitch) <= PITCH_LIMIT) return;
+    this.flight.yaw = wrapRadians(this.flight.yaw + Math.PI);
+    this.flight.pitch = wrapRadians(Math.PI - pitch);
+    this.flight.roll = wrapRadians(this.flight.roll + Math.PI);
+    if (!Number.isFinite(this.flight.pitch) || Math.abs(this.flight.pitch) > PITCH_LIMIT) {
+      this.flight.pitch = 0;
+    }
   }
 
   cycleTarget(): void {
@@ -301,16 +605,18 @@ export class CockpitEngine {
     }
     const index = candidates.findIndex((candidate) => candidate.id === this.selectedId);
     const next = candidates[(index + 1) % candidates.length];
+    this.completeTutorial('target');
     this.selectTarget(next.id);
   }
 
-  selectTarget(id: string | null): void {
+  selectTarget(id: string | null, manual = true): void {
     if (id === this.selectedId) return;
     this.selectedId = id;
     this.lockProgress = 0;
     this.lockWasLocked = false;
     this.lockInCone = false;
     this.lockDistance = 0;
+    if (id && manual) this.completeTutorial('target');
   }
 
   cycleWeapon(): void {
@@ -390,6 +696,7 @@ export class CockpitEngine {
     this.fireCooldown = 0.45;
     this.spawnEffect('muzzle', origin, { scale: 8, color: 'cyan', life: 0.14 });
     this.emit({ type: 'missile-fire', team: 'player', id: missile.id });
+    this.completeTutorial('fire');
   }
 
   flare(): void {
@@ -435,10 +742,12 @@ export class CockpitEngine {
       }
     }
     this.emit({ type: 'flare' });
+    this.completeTutorial('defend');
   }
 
   warpToBoss(): void {
     if (this.phase === 'idle') this.launch();
+    this.cancelManeuvers();
     this.phase = 'boss';
     this.bootTimer = 0;
     this.bossIntroTimer = 0;
@@ -488,8 +797,11 @@ export class CockpitEngine {
     this.updateEffectsLifetime(step);
     this.flareCooldown = Math.max(0, this.flareCooldown - step);
     this.fireCooldown = Math.max(0, this.fireCooldown - step);
+    this.throttleIdle += step;
 
     if (this.phase === 'boot') {
+      this.updateManeuver(step);
+      this.updateThrottle(step);
       this.updateFlight(step);
       this.bootTimer -= step;
       if (this.bootTimer <= 0) this.beginCombat();
@@ -498,8 +810,9 @@ export class CockpitEngine {
 
     if (this.phase === 'complete' || this.phase === 'failed') return;
 
-    this.updateFlight(step);
+    this.updateManeuver(step);
     this.updateThrottle(step);
+    this.updateFlight(step);
     this.updateGun(step);
     this.updateLock(step);
     this.updateAI(step);
@@ -507,6 +820,8 @@ export class CockpitEngine {
     this.updateMissiles(step);
     this.updateBoss(step);
     this.updateMissileWarning();
+    this.updateAssistWarnings();
+    this.updateTutorial(step);
     this.updateMissionState(step);
 
     if (this.phase === 'boss-intro') {
@@ -523,6 +838,7 @@ export class CockpitEngine {
     this.phase = 'dogfight';
     this.bootTimer = 0;
     this.warnings = [];
+    this.cancelManeuvers();
     this.spawnWingman();
     this.spawnInitialEnemies();
     this.say(this.scenario.awacsCallsign, 'awacs', 'LUMEN 1，VESPER 编队出现在十二点方向。交战规则：自由开火。');
@@ -532,46 +848,235 @@ export class CockpitEngine {
   }
 
   private updateFlight(dt: number): void {
-    const smoothing = 1 - Math.exp(-5.5 * dt);
+    const flight = this.flight;
+
+    /* 1 ── pilot input shaping: quick to build, softer to relax -------- */
     for (const axis of ['pitch', 'roll', 'yaw'] as const) {
-      this.input[axis] += (this.inputTarget[axis] - this.input[axis]) * smoothing;
+      const target = this.inputTarget[axis];
+      const current = this.input[axis];
+      const lambda = Math.abs(target) > Math.abs(current) ? INPUT_ATTACK : INPUT_RELEASE;
+      this.input[axis] = current + (target - current) * (1 - Math.exp(-lambda * dt));
     }
 
-    const speed = this.flight.speed;
-    this.flight.roll = wrapRadians(this.flight.roll + this.input.roll * 1.95 * dt);
-    this.flight.pitch = clamp(
-      this.flight.pitch + this.input.pitch * 0.98 * dt,
-      -1.35,
-      1.35,
-    );
+    /* 2 ── flight aids layer on top of the pilot, never instead of them */
+    const definition = this.scripted
+      ? MANEUVERS[this.scripted.id]
+      : this.sustained
+        ? MANEUVERS[this.sustained]
+        : null;
+    const scriptedDefinition: ManeuverDefinition | null =
+      definition && definition.kind === 'scripted' ? definition : null;
+    const sustainedDefinition: ManeuverDefinition | null =
+      definition && definition.kind === 'sustained' ? definition : null;
 
-    const bankTurn =
-      Math.tan(clamp(this.flight.roll, -1.28, 1.28)) * (9.81 / Math.max(speed, 140)) * 2.35;
-    this.flight.yaw = wrapRadians(
-      this.flight.yaw + (this.input.yaw * 0.55 + bankTurn) * dt,
-    );
+    const solution = solveAssists({
+      settings: this.assistSettings,
+      master: this.assistMaster,
+      dt,
+      input: this.input,
+      roll: flight.roll,
+      rollRate: flight.rollRate,
+      pitch: flight.pitch,
+      yaw: flight.yaw,
+      speed: flight.speed,
+      altitude: flight.position.y,
+      throttle: flight.throttle,
+      pilotThrottle: this.pilotThrottle,
+      throttleIdle: this.throttleIdle,
+      target: this.buildAssistTarget(),
+      maneuverActive: definition !== null,
+      active: this.phase === 'dogfight' || this.phase === 'boss-intro' || this.phase === 'boss',
+    });
+    this.assistSolution = solution;
+    if (solution.throttle !== null) flight.throttle = solution.throttle;
 
-    const targetSpeed = 128 + this.flight.throttle * 166 + (this.flight.throttle > 0.9 ? 34 : 0);
-    this.flight.speed = approach(this.flight.speed, targetSpeed, 62 * dt);
-    const afterburner = this.flight.throttle > 0.88;
-    if (afterburner !== this.flight.afterburner) {
-      this.flight.afterburner = afterburner;
+    /* 3 ── control authority: dynamic pressure, config and manoeuvre ---- */
+    const stallFactor = flight.postStall ? 0.6 : 1;
+    const q = clamp(flight.speed / 245, 0.42, 1.28) * stallFactor;
+    const pitchAuthority = sustainedDefinition?.pitchAuthority ?? 1;
+    const rollAuthority = sustainedDefinition?.rollAuthority ?? 1;
+    const turnBonus = sustainedDefinition?.turnBonus ?? 1;
+    const gLimit = sustainedDefinition?.gLimit ?? scriptedDefinition?.gLimit ?? 9.2;
+
+    flight.airbrake = sustainedDefinition?.id === 'airbrake';
+    flight.highG = sustainedDefinition?.id === 'highG';
+
+    const effPitch = clamp(this.input.pitch + solution.pitch, -1, 1);
+    const effRoll = clamp(this.input.roll + solution.roll, -1, 1);
+    const effYaw = clamp(this.input.yaw + solution.yaw, -1, 1);
+
+    let speedBias = 0;
+    let velocityLock = 0;
+
+    if (scriptedDefinition && this.scripted) {
+      /* Scripted profiles own the airframe: the pilot gets it back after. */
+      const profile = scriptedDefinition.profile!;
+      const t = clamp(this.scripted.time / scriptedDefinition.duration, 0, 1);
+      const [pitchMin, pitchMax] = scriptedDefinition.pitchRange(this.scripted.entryPitch);
+      const targetPitch = profile.pitchTarget(t, this.scripted.entryPitch);
+      flight.pitchRate = clamp((targetPitch - flight.pitch) * 7.5, -4.8, 4.8);
+      flight.pitch = clamp(flight.pitch + flight.pitchRate * dt, pitchMin, pitchMax);
+      flight.rollRate = profile.rollRate(t);
+      flight.roll = wrapRadians(flight.roll + flight.rollRate * dt);
+      flight.yaw = wrapRadians(flight.yaw + profile.yawRate(t) * dt);
+      speedBias = profile.speedBias(t);
+      velocityLock = profile.velocityLock(t);
+      this.scriptedG = profile.gTarget(t);
+    } else {
+      /* Roll: angular acceleration plus damping gives the wing some weight. */
+      const rollAccel = effRoll * ROLL_ACCEL * rollAuthority * q;
+      flight.rollRate = clamp(
+        flight.rollRate * Math.exp(-ROLL_DAMP * dt) + rollAccel * dt,
+        -ROLL_RATE_MAX * rollAuthority,
+        ROLL_RATE_MAX * rollAuthority,
+      );
+      flight.roll = wrapRadians(flight.roll + flight.rollRate * dt);
+
+      /* Pitch: rate commanded through a first-order lag. */
+      flight.pitchRate = damp(
+        flight.pitchRate,
+        effPitch * PITCH_RATE_MAX * pitchAuthority * q,
+        PITCH_LAG,
+        dt,
+      );
+      flight.pitch = clamp(flight.pitch + flight.pitchRate * dt, -PITCH_LIMIT, PITCH_LIMIT);
+
+      /* Yaw: rudder plus the banked-lift turn, automatically coordinated. */
+      const bankTurn =
+        Math.tan(clamp(flight.roll, -1.42, 1.42)) *
+        (9.81 / Math.max(flight.speed, SPEED_FLOOR)) *
+        2.5 *
+        turnBonus;
+      const coordination = flight.rollRate * 0.1;
+      flight.yaw = wrapRadians(
+        flight.yaw +
+          (effYaw * 0.62 * q * turnBonus + bankTurn + coordination) * dt,
+      );
+    }
+
+    flight.postStall = Math.abs(flight.pitch) > PITCH_LIMIT;
+
+    /* 4 ── energy: throttle, gravity along the nose, induced drag ------- */
+    const throttleSpeed =
+      SPEED_IDLE + flight.throttle * SPEED_SPAN + (flight.throttle > 0.9 ? SPEED_AB_BONUS : 0);
+    const gravity = -Math.sin(flight.pitch) * GRAVITY_BIAS;
+    const inducedDrag =
+      Math.abs(flight.pitchRate) * PITCH_DRAG +
+      Math.abs(flight.rollRate) * ROLL_DRAG +
+      (sustainedDefinition?.speedBleed ?? 0);
+    const floor = scriptedDefinition?.profile?.speedFloor ?? SPEED_FLOOR;
+    const targetSpeed = clamp(throttleSpeed + gravity - inducedDrag + speedBias, floor, SPEED_MAX);
+    flight.speed = approach(flight.speed, targetSpeed, 58 * dt);
+
+    /* 5 ── translate: the velocity vector can lag the nose -------------- */
+    const forward = forwardFromAngles(flight.yaw, flight.pitch);
+    let travel = forward;
+    if (velocityLock > 0.001 && this.velocityDir) {
+      travel = normalize({
+        x: lerp(forward.x, this.velocityDir.x, velocityLock),
+        y: lerp(forward.y, this.velocityDir.y, velocityLock),
+        z: lerp(forward.z, this.velocityDir.z, velocityLock),
+      });
+    }
+    this.travelDir = travel;
+    flight.position = add(flight.position, scale(travel, flight.speed * dt));
+    flight.position.y = clamp(flight.position.y, GROUND_FLOOR, CEILING);
+    if (!this.scripted && flight.position.y <= GROUND_FLOOR + 1 && travel.y < 0) {
+      // The low-altitude guard's last resort: level the nose instead of the
+      // airframe, so the player keeps full control of everything else.
+      flight.pitch = Math.max(flight.pitch, 0);
+    }
+
+    /* 6 ── G load and the afterburner transition ------------------------ */
+    const speedFactor = clamp(flight.speed / 245, 0.5, 1.15);
+    const rateRatio = Math.abs(flight.pitchRate) / PITCH_RATE_MAX;
+    const targetG =
+      1 +
+      rateRatio * 7.4 * speedFactor +
+      Math.abs(flight.rollRate) * 0.34 +
+      (scriptedDefinition ? this.scriptedG - 1 : 0) +
+      (sustainedDefinition?.id === 'highG' ? 1.4 : 0);
+    flight.gLoad = damp(flight.gLoad, clamp(targetG, 1, gLimit), 4.5, dt);
+
+    const afterburner = flight.throttle > 0.88;
+    if (afterburner !== flight.afterburner) {
+      flight.afterburner = afterburner;
       if (afterburner) this.emit({ type: 'afterburner' });
     }
 
-    const forward = forwardFromAngles(this.flight.yaw, this.flight.pitch);
-    this.flight.position = add(this.flight.position, scale(forward, this.flight.speed * dt));
+    const stalling = flight.speed <= floor + 3 && Math.abs(flight.pitch) > 0.35;
+    if (stalling && !this.stallAnnounced) {
+      this.stallAnnounced = true;
+      this.emit({ type: 'stall' });
+    } else if (!stalling) {
+      this.stallAnnounced = false;
+    }
+  }
 
-    const targetG =
-      1 +
-      Math.abs(this.input.pitch) * (this.flight.speed / 200) * 3.4 +
-      Math.abs(this.input.roll) * 1.1;
-    this.flight.gLoad = damp(this.flight.gLoad, clamp(targetG, 1, 9.2), 4, dt);
+  private updateManeuver(dt: number): void {
+    const active = this.scripted;
+    if (!active) return;
+    const definition = MANEUVERS[active.id];
+    active.time += dt;
+    if (active.time >= definition.duration) this.finishScripted();
   }
 
   private updateThrottle(dt: number): void {
     if (this.throttleAxis === 0) return;
-    this.flight.throttle = clamp(this.flight.throttle + this.throttleAxis * 0.42 * dt, 0, 1);
+    const next = clamp(this.flight.throttle + this.throttleAxis * 0.42 * dt, 0, 1);
+    this.flight.throttle = next;
+    this.pilotThrottle = next;
+    this.throttleIdle = 0;
+  }
+
+  private buildAssistTarget() {
+    const target = this.getEntity(this.selectedId);
+    if (!target || !target.alive || !this.isLockable(target)) return null;
+    const toTarget = sub(target.position, this.flight.position);
+    const forward = forwardFromAngles(this.flight.yaw, this.flight.pitch);
+    const angles = yawPitchFromDirection(toTarget);
+    return {
+      yaw: angles.yaw,
+      pitch: angles.pitch,
+      distance: Math.sqrt(toTarget.x ** 2 + toTarget.y ** 2 + toTarget.z ** 2),
+      angle: angleBetween(forward, normalize(toTarget)) * RAD,
+      lockable: true,
+    };
+  }
+
+  private updateAssistWarnings(): void {
+    const solution = this.assistSolution;
+    if (!solution) return;
+    if (solution.terrainAlert && this.assistSettings.terrain && this.assistMaster) {
+      this.warn(
+        'terrain',
+        solution.terrainAlert,
+        solution.terrainAlert === 'critical' ? 'PULL UP' : 'LOW ALTITUDE',
+        solution.terrainAlert === 'critical' ? '低空保护接通 — 正在拉起' : '注意高度 — 地形接近',
+        solution.terrainAlert === 'critical' ? 0.9 : 1.8,
+      );
+    }
+    for (const id of solution.engaged) {
+      if (this.assistAnnounced.has(id)) continue;
+      this.assistAnnounced.add(id);
+      this.emit({ type: 'assist-engaged', id });
+    }
+    for (const id of Array.from(this.assistAnnounced)) {
+      if (!solution.engaged.includes(id)) this.assistAnnounced.delete(id);
+    }
+  }
+
+  private updateTutorial(dt: number): void {
+    if (this.tutorialDismissed) return;
+    if (this.phase !== 'dogfight' && this.phase !== 'boss-intro' && this.phase !== 'boss') return;
+    this.tutorialTimer += dt;
+    const state = buildTutorialState(this.tutorialFlags, false, true);
+    if (state.completed >= state.total) {
+      if (this.tutorialDoneAt === null) this.tutorialDoneAt = this.elapsed;
+      if (this.elapsed - this.tutorialDoneAt >= TUTORIAL_LINGER) this.dismissTutorial();
+      return;
+    }
+    if (this.tutorialTimer >= TUTORIAL_AUTO_HIDE) this.dismissTutorial();
   }
 
   private updateLock(dt: number): void {
@@ -592,6 +1097,9 @@ export class CockpitEngine {
     const angle = angleBetween(forward, normalize(toTarget)) * RAD;
     this.lockDistance = dist;
     this.lockInCone = angle <= LOCK_CONE_DEG && dist <= LOCK_RANGE;
+    const desired = yawPitchFromDirection(toTarget);
+    this.lockSteering = wrapRadians(desired.yaw - this.flight.yaw) * RAD;
+    this.lockElevation = (desired.pitch - this.flight.pitch) * RAD;
     if (this.lockProgress < 1) {
       const rate = this.lockInCone ? dt / LOCK_TIME : -(dt / LOCK_TIME) * 2.4;
       this.lockProgress = clamp(this.lockProgress + rate, 0, 1);
@@ -605,6 +1113,7 @@ export class CockpitEngine {
     const locked = this.lockProgress >= 0.999;
     if (locked && !this.lockWasLocked) {
       this.emit({ type: 'lock-acquired', targetId: target.id });
+      this.completeTutorial('lock');
       this.addComms(
         this.scenario.wingmanCallsign,
         'wingman',
@@ -1008,6 +1517,7 @@ export class CockpitEngine {
     this.phase = 'complete';
     this.gunHeld = false;
     this.gunFiring = false;
+    this.cancelManeuvers();
     this.addComms(this.scenario.awacsCallsign, 'awacs', 'LEVIATHAN 已沉没。全体返航，这是属于 CIRRUS 的黄昏。');
     this.say(this.scenario.wingmanCallsign, 'wingman', '干得漂亮，队长。今晚的酒我请。');
     this.emit({ type: 'mission-complete' });
@@ -1019,6 +1529,7 @@ export class CockpitEngine {
     this.flight.hp = 0;
     this.gunHeld = false;
     this.gunFiring = false;
+    this.cancelManeuvers();
     this.stats.elapsed = Math.floor(this.elapsed);
     this.stats.rank = 'C';
     this.stats.score = this.score;
@@ -1493,20 +2004,24 @@ export class CockpitEngine {
     const candidates = this.getCandidates();
     const bossActive = Boolean(this.bossId) && !this.bossDefeated;
     const weakpoint = bossActive ? candidates.find((candidate) => candidate.kind === 'weakpoint') : undefined;
-    this.selectTarget((weakpoint ?? candidates[0])?.id ?? null);
+    this.selectTarget((weakpoint ?? candidates[0])?.id ?? null, false);
   }
 
   private getLockState(): LockState {
     const target = this.getEntity(this.selectedId);
-    const targetable = target && this.isLockable(target);
+    const targetable = Boolean(target && this.isLockable(target));
     const locked = targetable && this.lockProgress >= 0.999;
+    const steeringAssist = this.assistSolution?.engaged.includes('steering') ?? false;
     return {
       targetId: targetable ? this.selectedId : null,
-      callsign: targetable ? target.label || target.callsign : null,
+      callsign: targetable && target ? target.label || target.callsign : null,
       progress: targetable ? this.lockProgress : 0,
       state: locked ? 'locked' : targetable && this.lockProgress > 0.02 ? 'searching' : 'none',
       distance: this.lockDistance,
       inCone: this.lockInCone,
+      steering: targetable ? this.lockSteering : 0,
+      elevation: targetable ? this.lockElevation : 0,
+      assisted: targetable && steeringAssist,
     };
   }
 
@@ -1547,8 +2062,49 @@ export class CockpitEngine {
     };
   }
 
-  private buildWingmanHud(): WingmanHud | null {
-    const wingman = this.getEntity(this.wingmanId);
+  private buildManeuverHud(): ManeuverSnapshot {
+    const active = this.activeManeuver();
+    const definition = active ? MANEUVERS[active] : null;
+    const progress =
+      definition && definition.kind === 'scripted' && this.scripted
+        ? clamp(this.scripted.time / definition.duration, 0, 1)
+        : 0;
+    return {
+      active,
+      activeLabelEn: definition?.labelEn ?? null,
+      activeLabelZh: definition?.labelZh ?? null,
+      activeCode: definition?.code ?? null,
+      progress,
+      list: buildManeuverStatus({
+        speed: this.flight.speed,
+        altitude: this.flight.position.y,
+        activeManeuver: active,
+        progress,
+      }),
+    };
+  }
+
+  private buildAssistHud() {
+    const solution = this.assistSolution;
+    return {
+      master: this.assistMaster,
+      anyEnabled: this.assistMaster && Object.values(this.assistSettings).some(Boolean),
+      engaged: solution?.engaged ?? [],
+      list: buildAssistStatus(
+        this.assistSettings,
+        this.assistMaster,
+        solution?.engaged ?? [],
+        solution?.authority ?? {
+          attitude: 0,
+          steering: 0,
+          throttle: 0,
+          terrain: 0,
+        },
+      ),
+    };
+  }
+
+  private buildWingmanHud(): WingmanHud | null {    const wingman = this.getEntity(this.wingmanId);
     if (!wingman) return null;
     return {
       id: wingman.id,
@@ -1723,15 +2279,22 @@ export class CockpitEngine {
         knots: this.flight.speed * 1.94384,
         mach: this.flight.speed / 340,
         altitude: this.flight.position.y,
-        verticalSpeed: Math.sin(this.flight.pitch) * this.flight.speed,
+        verticalSpeed: this.travelDir.y * this.flight.speed,
         heading: headingFromYaw(this.flight.yaw),
-        pitch: this.flight.pitch * RAD,
+        pitch: clamp(this.flight.pitch * RAD, -90, 90),
+        pitchRaw: this.flight.pitch * RAD,
         roll: this.flight.roll * RAD,
+        rollRate: this.flight.rollRate * RAD,
         gLoad: this.flight.gLoad,
         throttle: this.flight.throttle,
         hp: this.flight.hp,
         maxHp: this.flight.maxHp,
         afterburner: this.flight.afterburner,
+        airbrake: this.flight.airbrake,
+        highG: this.flight.highG,
+        postStall: this.flight.postStall,
+        inverted: Math.abs(this.flight.pitch) > Math.PI / 2,
+        stall: this.flight.speed <= (scriptedFloor(this.scripted) ?? SPEED_FLOOR) + 3,
       },
       weapons: {
         selected: this.weapons.selected,
@@ -1750,6 +2313,13 @@ export class CockpitEngine {
       comms: this.comms.slice(-6),
       wingman: this.buildWingmanHud(),
       boss,
+      maneuver: this.buildManeuverHud(),
+      assist: this.buildAssistHud(),
+      tutorial: buildTutorialState(
+        this.tutorialFlags,
+        this.tutorialDismissed,
+        this.phase === 'dogfight' || this.phase === 'boss-intro' || this.phase === 'boss',
+      ),
       mission: {
         kills: this.kills,
         requiredKills: this.scenario.requiredKills,
@@ -1786,6 +2356,9 @@ export class CockpitEngine {
       missileWarning,
       bossActive: Boolean(this.bossId) && !this.bossDefeated,
       elapsed: this.elapsed,
+      maneuver: this.activeManeuver(),
+      airbrake: this.flight.airbrake,
+      assistEngaged: this.assistSolution?.engaged.length ?? 0,
     };
   }
 

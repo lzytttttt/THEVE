@@ -48,11 +48,12 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 1. **ATTRACT / 开场** — 落日云海、巨兽剪影、任务简报卡与电影化标题。
 2. **BRIEFING / 任务简报** — 目标、载具、威胁档案与操作速查。
 3. **BOOT / 航电自检** — 2.8 秒冷启动序列，可跳过。
-4. **DOGFIGHT / 制空** — 迎击 VESPER 编队；锁定、发射、热焰弹规避。
-5. **LEVIATHAN / 战争巨兽** — 击落 2 架敌机后触发；摧毁两具护盾节点，再攻击暴露的反应堆核心。
-6. **DEBRIEF / 结算** — 评分 S / A / B / C、命中率、战损、任务时间与最佳评级（localStorage）。
+4. **FIRST FLIGHT CHECK / 简要操作说明** — 进入任务后左下角出现的 7 项检查单，会随着你真的做出动作逐条打勾并自动收起。
+5. **DOGFIGHT / 制空** — 迎击 VESPER 编队；锁定、发射、热焰弹规避，用七种战斗机机动抢位。
+6. **LEVIATHAN / 战争巨兽** — 击落 2 架敌机后触发；摧毁两具护盾节点，再攻击暴露的反应堆核心。
+7. **DEBRIEF / 结算** — 评分 S / A / B / C、命中率、战损、任务时间与最佳评级（localStorage）。
 
-任务失败后可直接重试；暂停菜单提供画质、反转俯仰、音量与静音设置。
+任务失败后可直接重试；暂停菜单提供画质、反转俯仰、辅助驾驶逐项开关、音量与静音设置。
 
 ---
 
@@ -69,11 +70,37 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 | `Tab` / `T` | 切换目标 |
 | `F` | 热焰弹 |
 | `1` / `2` | 选择 AAM / GUN |
+| `Y` | 辅助驾驶总开关 |
 | `M` | 静音 |
 | `P` / `Esc` | 暂停 |
 | `H` | 飞行手册 |
 | 鼠标拖拽 | 虚拟驾驶杆 |
-| 屏幕控制台 | 完整触屏可玩：油门、武器、FIRE、FLARE、TARGET |
+| 屏幕控制台 | 完整触屏可玩：油门、武器、机动、辅助、FIRE、FLARE、TARGET |
+
+### 战斗机机动（v0.2）
+
+| 输入 | 机动 | 说明 |
+| --- | --- | --- |
+| `C`（按住） | 高G转弯 HIGH-G TURN | 操纵面权限 ×1.55，转弯更紧，掉速与过载都更高（上限 9.8G） |
+| `X`（按住） | 减速板 AIRBRAKE | 约 130 m/s² 的额外阻力，用于逼敌机冲前或收半径 |
+| `Z` | 眼镜蛇机动 PUGACHEV COBRA | 1.7 秒内上仰到 ~112°；速度矢量几乎不变，咬尾者会直接冲前 |
+| `V` | 桶滚 BARREL ROLL | 完整 360° 螺旋滚转，航向基本不变，55% 概率甩掉来袭导弹 |
+| `B` | 破S机动 SPLIT-S | 半滚倒转后下扣半筋斗：掉头 180° 并把高度换成速度 |
+| `N` | 殷麦曼翻转 IMMELMANN | 半筋斗上升后半滚改平：掉头 180° 同时抢回高度 |
+| `K` | 库尔比特 KULBIT | 2.6 秒内以极小半径完成 360° 筋斗，代价是几乎全部动能 |
+
+按住类机动跟随操纵杆即时生效；一次性机动由飞控按预设剖面接管姿态，动作结束的瞬间把操纵权交回，并自动把姿态归一化回正常包线（俯仰 ±77°）。
+
+### 辅助驾驶（v0.2，默认开启）
+
+| 代号 | 名称 | 行为 |
+| --- | --- | --- |
+| `ATT` | 姿态辅助 | 松杆时消除滚转漂移；接近平飞时把机翼摆正。压着坡度时不会跟你抢杆 |
+| `STG` | 目标引导 | 目标在机头前方 ±74° 内时轻微带杆（偏航 ≤0.34、俯仰 ≤0.26），把敌机送进 12° 锁定锥 |
+| `THR` | 自动油门 | 松手 1.6 秒后自动补油门保持交战速度；**只会加不会减**，绝不违背你的油门指令 |
+| `ALT` | 低空保护 | 1300 m 提醒、820 m 告警、520 m 以下柔和拉起 |
+
+设计约束：辅助只在你**没有操作的那根轴**上出力（自由度按输入幅度线性衰减），任何直接输入都会瞬间夺回控制权；按 `Y` 可以整组开关，暂停菜单可以逐项开关，设置持久化到 localStorage。
 
 竖屏手机显示横屏提示；横屏手机使用精简 HUD 与控制台。全屏按钮位于右上角。
 
@@ -100,6 +127,11 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 **three.js 座舱：** 固定在相机上的座舱框与切角玻璃、程序化天空 shader、FBM 云海、
 近场云团、低多边形敌机 / 僚机、可旋转雷达的空中无畏舰、对象池化爆炸与曳光弹。
 3D 在独立 rAF 中运行，不经过 React；模拟以 60Hz 推进，只以 30Hz 向 React 发布快照。
+
+**飞行模型（v0.2 手感重做）：** 操纵面权限随动压（速度）缩放，滚转用角加速度 + 阻尼产生机翼惯量，
+俯仰走一阶滞后指令，转弯由坡度升力自动协调并叠加滚转协调舵；爬升掉速、俯冲增速，
+拉杆与滚转产生诱导阻力，过载由俯仰角速度与速度实时积分。失速地板 150 m/s，
+高速上限 330 m/s（加力 0.88 油门以上）。
 
 **WebAudio：** 全部程序化。双锯齿引擎 + 风噪随油门/速度变化，锁定单音、RWR、发射、
 爆炸、热焰弹、电台静噪与 D 小调生成式配乐。首次 `LAUNCH` 用户手势才创建 AudioContext；
@@ -146,12 +178,13 @@ function CockpitExperience() {
 `CockpitProvider` 可传入自定义 `scenario`（`sunsetSpearScenario` / `createDemoScenario`）。
 HUD 组件均可单独复用；组合版 `CockpitHud` 只是本项目 Showcase 的默认布局。
 
-### 组件概览（30+）
+### 组件概览（36+）
 
 - **基础**：`TheveRoot` `Panel` `Button` `IconButton` `Tag` `Readout` `Meter` `Keycap` `Toggle` `StatusLamp` `Divider` `HazardStripe`
 - **HUD**：`CockpitHud` `HeadingTape` `PitchLadder` `FlightPathMarker` `SpeedTape` `AltitudeTape` `TargetMarker` `LockReticle` `MissileWarning` `RadarScope` `WeaponRack` `CommsFeed` `WingmanStatus` `BossBar` `ObjectiveTracker` `ScoreTicker` `DamageOverlay`
-- **操作**：`CockpitControls`，内部组合油门、武器、FIRE、热焰弹与目标切换
-- **模拟**：`CockpitEngine`、`useCockpit`、`useCockpitActions`、`useCockpitEngine`、`useCockpitSettings`、`useAudio`、`useCockpitControls`
+- **操纵与辅助（v0.2）**：`ManeuverRail` `ManeuverBanner` `AssistRail` `FlightAidStrip` `LockSteeringCue` `StartupChecklist` `GLoadMeter`
+- **操作**：`CockpitControls`，内部组合油门、武器、机动、辅助、FIRE、热焰弹与目标切换
+- **模拟**：`CockpitEngine`、`MANEUVERS`、`ASSISTS`、`TUTORIAL_STEPS`、`useCockpit`、`useCockpitActions`、`useCockpitEngine`、`useCockpitSettings`、`useAudio`、`useCockpitControls`
 - **3D**：`CockpitViewport`、`CockpitScene`（`getDebugInfo()` 供自动化测试）
 - **音频**：`AudioEngine`（可在 Provider 外独立使用）
 
@@ -159,10 +192,10 @@ HUD 组件均可单独复用；组合版 `CockpitHud` 只是本项目 Showcase �
 
 | 产物 | raw | gzip |
 | --- | --- | --- |
-| 核心入口 `dist/index.js` | 47.9 KB | 11.2 KB |
+| 核心入口 `dist/index.js` | 59.6 KB | 13.6 KB |
 | three 入口 `dist/three.js` | 38.5 KB | 10.6 KB |
-| 模拟/音频共享块 | 70.9 KB | 19.7 KB |
-| 样式 `dist/theve.css` | 58.1 KB | 12.3 KB |
+| 模拟/音频共享块 | 96.5 KB | 27.2 KB |
+| 样式 `dist/theve.css` | 69.9 KB | 14.2 KB |
 
 Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 包单独加载。
 
@@ -173,9 +206,19 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 - 所有控制按钮可键盘到达，2px 青色 focus ring；暂停 / 帮助 / 结算对话框带焦点陷阱。
 - 仪表使用 `role="meter"` 与 `aria-valuetext`；告警使用限流的 `role="alert"`；通讯使用 `aria-live="polite"`。
 - 敌我、锁定与告警不只依赖颜色：同时使用形状、图标、文字与方向箭头。
-- 支持 `prefers-reduced-motion`：关闭镜头抖动、扫描线与大部分过渡。
+- 七种机动、四项辅助与检查单均为真实 `<button>`，带中文 `aria-label` 与键盘 `aria-pressed` 状态。
+- 支持 `prefers-reduced-motion`：关闭镜头抖动、扫描线、机动横幅与检查单的切入动画。
 - 静音后，导弹告警、通讯与任务结果都有视觉替代。
 - 竖屏提示可继续进入精简模式；横屏手机有专门的短屏 HUD 布局。
+
+---
+
+## 版本
+
+| 版本 | 主题 | 内容 |
+| --- | --- | --- |
+| 0.1 | 座舱与世界观 | 设计令牌、HUD 组件、three.js 座舱、程序化音频、SUNSET SPEAR 任务 |
+| **0.2** | **战机操作** | **七种战斗机机动、四项辅助驾驶、进入任务后的简要操作说明、飞行手感重做** |
 
 ---
 
@@ -199,12 +242,14 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 
 | | |
 | --- | --- |
-| ![Dogfight](docs/screenshots/03-dogfight-1920.png) | ![Boss](docs/screenshots/04-boss-1920.png) |
-| 制空：锁定 VESPER，RWR 告警 | 战争巨兽 LEVIATHAN 与护盾节点 |
+| ![Dogfight](docs/screenshots/03-dogfight-1920.png) | ![High-G](docs/screenshots/03b-highg-turn-1920.png) |
+| 制空：锁定 VESPER，检查单与辅助状态条 | 高G转弯：机动面板与 G 表 |
+| ![Cobra](docs/screenshots/03c-cobra-1920.png) | ![Boss](docs/screenshots/04-boss-1920.png) |
+| 眼镜蛇机动：过 90° 上仰与 POST STALL | 战争巨兽 LEVIATHAN 与护盾节点 |
 | ![Briefing](docs/screenshots/01-briefing-1920.png) | ![Debrief](docs/screenshots/07-debrief-1920.png) |
 | 任务简报 | 任务结算 / S 评级 |
 
-完整截图集（开场、启动、暂停、手册、Boss 登场、任务失败、系统图鉴、1366 / 390 / 横屏）在
+完整截图集（开场、启动、制空、高G转弯、眼镜蛇、巨兽、暂停、手册、Boss 登场、任务失败、系统图鉴、1366 / 390 / 横屏）在
 [`docs/screenshots/`](docs/screenshots/)。
 
 ---
@@ -213,6 +258,8 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 
 - 这是设计实验与可玩 Showcase，不是《皇牌空战》的复刻；没有官方机体、Logo、音乐或美术。
 - 飞行模型是街机化手感，不是真实气动；没有地形碰撞、多人联机或完整战役。
+- 机动的姿态剖面是手工调参的脚本，不是真实飞控律；眼镜蛇 / 库尔比特只保留「姿态先动、速度矢量后动」这一条关键特征。
+- 辅助驾驶不会在你正在操作的轴上出力，因此不会替你完成机动，也不会自动开火。
 - 桌面 Chromium 为主要目标；Safari / Firefox 尽力兼容。WebGL 不可用时会退化为 CSS 黄昏 + 2D HUD。
 - 音频必须在用户手势后启动；自动化无手势环境可能保持静默，但界面仍可用。
 - 没有手柄支持；触屏与键鼠已覆盖全部核心操作。

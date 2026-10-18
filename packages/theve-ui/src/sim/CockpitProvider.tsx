@@ -11,9 +11,14 @@ import {
 import { AudioEngine } from '../audio/AudioEngine';
 import { CockpitEngine } from './engine';
 import { sunsetSpearScenario } from './scenario';
+import { DEFAULT_ASSISTS, normalizeAssists } from './assists';
+import { isManeuverId } from './maneuvers';
 import type {
+  AssistId,
+  AssistSettings,
   CockpitSnapshot,
   ControlInput,
+  ManeuverId,
   Scenario,
   WeaponId,
 } from './types';
@@ -42,6 +47,16 @@ export interface CockpitActions {
   cycleWeapon: () => void;
   selectWeapon: (weapon: WeaponId) => void;
   triggerBoss: () => void;
+  /** Held manoeuvres (high-G turn, airbrake) engage on press and release. */
+  startManeuver: (id: ManeuverId) => void;
+  endManeuver: (id: ManeuverId) => void;
+  cancelManeuvers: () => void;
+  /** Toggles every flight aid at once (key `Y`). */
+  toggleAssists: () => void;
+  setAssist: (id: AssistId, enabled: boolean) => void;
+  setAssists: (settings: Partial<AssistSettings>) => void;
+  dismissTutorial: () => void;
+  restartTutorial: () => void;
 }
 
 export interface CockpitAudio {
@@ -59,6 +74,12 @@ export interface CockpitSettingsValue {
   setQuality: (quality: CockpitQuality) => void;
   invertPitch: boolean;
   setInvertPitch: (invert: boolean) => void;
+  assists: AssistSettings;
+  /** True when the master switch is closed and at least one aid is enabled. */
+  assistsActive: boolean;
+  setAssist: (id: AssistId, enabled: boolean) => void;
+  setAssists: (settings: Partial<AssistSettings>) => void;
+  setAllAssists: (enabled: boolean) => void;
 }
 
 interface StoredSettings {
@@ -66,6 +87,8 @@ interface StoredSettings {
   volume: number;
   quality: CockpitQuality;
   invertPitch: boolean;
+  assists: AssistSettings;
+  assistMaster: boolean;
 }
 
 const STORAGE_KEY = 'theve.settings.v1';
@@ -74,6 +97,8 @@ const DEFAULT_SETTINGS: StoredSettings = {
   volume: 0.65,
   quality: 'auto',
   invertPitch: false,
+  assists: { ...DEFAULT_ASSISTS },
+  assistMaster: true,
 };
 
 function loadSettings(): StoredSettings {
@@ -93,6 +118,11 @@ function loadSettings(): StoredSettings {
           ? parsed.quality
           : DEFAULT_SETTINGS.quality,
       invertPitch: Boolean(parsed.invertPitch),
+      assists: normalizeAssists(parsed.assists),
+      assistMaster:
+        typeof parsed.assistMaster === 'boolean'
+          ? parsed.assistMaster
+          : DEFAULT_SETTINGS.assistMaster,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -138,6 +168,12 @@ export function CockpitProvider({
 
   const [audioStarted, setAudioStarted] = useState(false);
   const [level, setLevel] = useState(0);
+
+  // Seed the simulation with the persisted flight-aid configuration once.
+  useEffect(() => {
+    engine.setAssists(settingsRef.current.assists);
+    engine.setAssistMaster(settingsRef.current.assistMaster);
+  }, [engine]);
 
   const startAudio = useCallback(async () => {
     if (!audioEnabled || settingsRef.current.muted) return;
@@ -254,6 +290,32 @@ export function CockpitProvider({
       cycleWeapon: () => engine.cycleWeapon(),
       selectWeapon: (weapon) => engine.selectWeapon(weapon),
       triggerBoss: () => engine.debugTriggerBoss(),
+      startManeuver: (id) => {
+        if (!isManeuverId(id)) return;
+        engine.startManeuver(id);
+      },
+      endManeuver: (id) => {
+        if (!isManeuverId(id)) return;
+        engine.endManeuver(id);
+      },
+      cancelManeuvers: () => engine.cancelManeuvers(),
+      toggleAssists: () => {
+        const next = engine.toggleAssists();
+        setSettings((current) => ({ ...current, assistMaster: next }));
+      },
+      setAssist: (id, enabled) => {
+        engine.setAssist(id, enabled);
+        setSettings((current) => ({
+          ...current,
+          assists: { ...current.assists, [id]: enabled },
+        }));
+      },
+      setAssists: (partial) => {
+        engine.setAssists(partial);
+        setSettings((current) => ({ ...current, assists: { ...current.assists, ...partial } }));
+      },
+      dismissTutorial: () => engine.dismissTutorial(),
+      restartTutorial: () => engine.restartTutorial(),
     }),
     [engine, startIfAudible],
   );
@@ -264,6 +326,29 @@ export function CockpitProvider({
   const setInvertPitch = useCallback((invertPitch: boolean) => {
     setSettings((current) => ({ ...current, invertPitch }));
   }, []);
+  const setAssist = useCallback(
+    (id: AssistId, enabled: boolean) => {
+      engine.setAssist(id, enabled);
+      setSettings((current) => ({
+        ...current,
+        assists: { ...current.assists, [id]: enabled },
+      }));
+    },
+    [engine],
+  );
+  const setAssistsForAll = useCallback(
+    (enabled: boolean) => {
+      const next: AssistSettings = {
+        attitude: enabled,
+        steering: enabled,
+        throttle: enabled,
+        terrain: enabled,
+      };
+      engine.setAssists(next);
+      setSettings((current) => ({ ...current, assists: next }));
+    },
+    [engine],
+  );
 
   const audio = useMemo<CockpitAudio>(
     () => ({
@@ -297,8 +382,18 @@ export function CockpitProvider({
       setQuality,
       invertPitch: settings.invertPitch,
       setInvertPitch,
+      assists: settings.assists,
+      assistsActive:
+        settings.assistMaster && Object.values(settings.assists).some(Boolean),
+      setAssist,
+      setAssists: (partial: Partial<AssistSettings>) => {
+        for (const [id, value] of Object.entries(partial)) {
+          if (typeof value === 'boolean') setAssist(id as AssistId, value);
+        }
+      },
+      setAllAssists: setAssistsForAll,
     }),
-    [settings.quality, settings.invertPitch, setQuality, setInvertPitch],
+    [settings.quality, settings.invertPitch, settings.assists, settings.assistMaster, setQuality, setInvertPitch, setAssist, setAssistsForAll],
   );
 
   return (

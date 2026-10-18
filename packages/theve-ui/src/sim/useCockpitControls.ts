@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useCockpitActions, useCockpitEngine } from './CockpitProvider';
+import { MANEUVERS } from './maneuvers';
+import type { ManeuverId } from './types';
 
 export interface CockpitControlOptions {
   enabled?: boolean;
@@ -22,6 +24,20 @@ const MOVEMENT_KEYS = new Set([
   'ArrowLeft',
   'ArrowRight',
 ]);
+
+/** Held manoeuvres: engage while the key is down, release when it comes up. */
+const SUSTAINED_BY_KEY: Record<string, ManeuverId> = {
+  KeyC: 'highG',
+  KeyX: 'airbrake',
+};
+
+/** Timed manoeuvres: one press ignites the full profile. */
+const SCRIPTED_BY_KEY: Record<string, ManeuverId> = Object.fromEntries(
+  (['cobra', 'barrelRoll', 'splitS', 'immelmann', 'kulbit'] as ManeuverId[]).map((id) => [
+    MANEUVERS[id].key,
+    id,
+  ]),
+) as Record<string, ManeuverId>;
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
@@ -50,10 +66,18 @@ export function useCockpitControls(options: CockpitControlOptions = {}): void {
     let pointerId: number | null = null;
     let startX = 0;
     let startY = 0;
+    let activeSustained: ManeuverId | null = null;
 
     const resetAxes = () => {
       actions.setInput({ pitch: 0, roll: 0, yaw: 0 });
       actions.setThrottleAxis(0);
+    };
+
+    const releaseSustained = () => {
+      if (activeSustained) {
+        actions.endManeuver(activeSustained);
+        activeSustained = null;
+      }
     };
 
     const applyAxes = () => {
@@ -75,6 +99,7 @@ export function useCockpitControls(options: CockpitControlOptions = {}): void {
       held.clear();
       dragging = false;
       pointerId = null;
+      releaseSustained();
       resetAxes();
       actions.stopGun();
     };
@@ -100,7 +125,26 @@ export function useCockpitControls(options: CockpitControlOptions = {}): void {
         return;
       }
       if (interactive) return;
+
+      const sustained = SUSTAINED_BY_KEY[code];
+      if (sustained) {
+        event.preventDefault();
+        if (activeSustained !== sustained) {
+          releaseSustained();
+          actions.startManeuver(sustained);
+          activeSustained = sustained;
+        }
+        return;
+      }
+
       if (event.repeat) return;
+
+      const scripted = SCRIPTED_BY_KEY[code];
+      if (scripted) {
+        event.preventDefault();
+        actions.startManeuver(scripted);
+        return;
+      }
 
       switch (code) {
         case 'Tab':
@@ -117,6 +161,9 @@ export function useCockpitControls(options: CockpitControlOptions = {}): void {
           break;
         case 'KeyF':
           actions.flare();
+          break;
+        case 'KeyY':
+          actions.toggleAssists();
           break;
         case 'Digit1':
           actions.selectWeapon('aam');
@@ -145,6 +192,7 @@ export function useCockpitControls(options: CockpitControlOptions = {}): void {
     const onKeyUp = (event: KeyboardEvent) => {
       const code = event.code;
       if (code === 'KeyJ') actions.stopGun();
+      if (activeSustained && MANEUVERS[activeSustained].key === code) releaseSustained();
       if (held.delete(code)) applyAxes();
     };
 

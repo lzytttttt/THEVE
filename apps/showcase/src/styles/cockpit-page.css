@@ -1150,6 +1150,78 @@
   border-top: 1px solid rgba(99, 243, 255, 0.12);
 }
 
+.dialog-panel__grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+
+@media (max-width: 1180px) {
+  .dialog-panel__grid--three {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* --- v0.2 flight-aid settings -------------------------------------- */
+
+.aid-settings__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 7px;
+  border-bottom: 1px dashed rgba(99, 243, 255, 0.12);
+  color: var(--tv-green);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+}
+
+.aid-settings__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.aid-settings__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px dashed rgba(99, 243, 255, 0.08);
+}
+
+.aid-settings__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.aid-settings__text strong {
+  color: var(--tv-ice);
+  font-family: var(--tv-font-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.aid-settings__text small {
+  color: rgba(134, 163, 174, 0.7);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.overlay-controls--maneuvers {
+  grid-template-columns: 1fr;
+}
+
+.dialog-panel__grid--three .overlay-controls {
+  grid-template-columns: 1fr;
+}
+
+.dialog-panel__grid--three .overlay-controls > div {
+  padding: 3px 0;
+}
+
 .dialog-panel__section h3 {
   margin: 0 0 8px;
   color: var(--tv-cyan-dim);

@@ -13,6 +13,33 @@ export type MissionPhase =
   | 'complete'
   | 'failed';
 
+/** Fighter manoeuvres added in the v0.2 handling pass. */
+export type ManeuverId =
+  | 'highG'
+  | 'airbrake'
+  | 'cobra'
+  | 'barrelRoll'
+  | 'splitS'
+  | 'immelmann'
+  | 'kulbit';
+
+/** `sustained` follows the stick while held, `scripted` plays a timed profile. */
+export type ManeuverKind = 'sustained' | 'scripted';
+
+/** Co-pilot style flight aids. All of them yield to direct pilot input. */
+export type AssistId = 'attitude' | 'steering' | 'throttle' | 'terrain';
+
+export type AssistSettings = Record<AssistId, boolean>;
+
+export type TutorialStepId =
+  | 'attitude'
+  | 'throttle'
+  | 'target'
+  | 'lock'
+  | 'fire'
+  | 'maneuver'
+  | 'defend';
+
 export type Team = 'player' | 'ally' | 'hostile';
 export type EntityKind =
   | 'fighter'
@@ -36,12 +63,19 @@ export interface FlightState {
   yaw: number;
   pitch: number;
   roll: number;
+  rollRate: number;
+  pitchRate: number;
   speed: number;
   throttle: number;
   hp: number;
   maxHp: number;
   gLoad: number;
   afterburner: boolean;
+  /** Airbrake / high-G flags feed the HUD and the audio layer. */
+  airbrake: boolean;
+  highG: boolean;
+  /** True while the airframe is beyond the normal ±77° pitch envelope. */
+  postStall: boolean;
 }
 
 export interface AIState {
@@ -134,7 +168,7 @@ export interface Scenario {
   };
 }
 
-export type WeaponWarningKind = 'missile' | 'damage' | 'boss' | 'system';
+export type WeaponWarningKind = 'missile' | 'damage' | 'boss' | 'system' | 'terrain';
 
 export interface WarningState {
   id: string;
@@ -232,6 +266,75 @@ export interface LockState {
   state: 'none' | 'searching' | 'locked';
   distance: number;
   inCone: boolean;
+  /** Signed yaw error to the target in degrees — the steering cue. */
+  steering: number;
+  /** Signed pitch error to the target in degrees. */
+  elevation: number;
+  /** True while the target steering aid is nudging the nose. */
+  assisted: boolean;
+}
+
+export interface ManeuverStatus {
+  id: ManeuverId;
+  kind: ManeuverKind;
+  labelEn: string;
+  labelZh: string;
+  /** Short label for compact deck chips. */
+  shortZh: string;
+  code: string;
+  key: string;
+  hint: string;
+  active: boolean;
+  available: boolean;
+  /** Localised reason shown when a manoeuvre cannot be started. */
+  blocked: string | null;
+  /** 0..1 progress for scripted manoeuvres, 0 while idle. */
+  progress: number;
+}
+
+export interface ManeuverSnapshot {
+  active: ManeuverId | null;
+  activeLabelEn: string | null;
+  activeLabelZh: string | null;
+  activeCode: string | null;
+  progress: number;
+  list: ManeuverStatus[];
+}
+
+export interface AssistStatus {
+  id: AssistId;
+  labelEn: string;
+  labelZh: string;
+  code: string;
+  hint: string;
+  enabled: boolean;
+  /** Currently applying a correction. */
+  engaged: boolean;
+  /** 0..1 share of the axis budget the aid is using. */
+  authority: number;
+}
+
+export interface AssistSnapshot {
+  master: boolean;
+  anyEnabled: boolean;
+  engaged: AssistId[];
+  list: AssistStatus[];
+}
+
+export interface TutorialStep {
+  id: TutorialStepId;
+  keys: string[];
+  labelZh: string;
+  labelEn: string;
+  done: boolean;
+}
+
+export interface TutorialState {
+  visible: boolean;
+  dismissed: boolean;
+  completed: number;
+  total: number;
+  steps: TutorialStep[];
 }
 
 export interface CockpitSnapshot {
@@ -248,13 +351,22 @@ export interface CockpitSnapshot {
     altitude: number;
     verticalSpeed: number;
     heading: number;
+    /** Display pitch in degrees, always inside ±90° for the ladder. */
     pitch: number;
+    /** True raw pitch in degrees — goes past ±90° during vertical manoeuvres. */
+    pitchRaw: number;
     roll: number;
+    rollRate: number;
     gLoad: number;
     throttle: number;
     hp: number;
     maxHp: number;
     afterburner: boolean;
+    airbrake: boolean;
+    highG: boolean;
+    postStall: boolean;
+    inverted: boolean;
+    stall: boolean;
   };
   weapons: {
     selected: WeaponId;
@@ -273,6 +385,9 @@ export interface CockpitSnapshot {
   comms: CommsMessage[];
   wingman: WingmanHud | null;
   boss: BossHud | null;
+  maneuver: ManeuverSnapshot;
+  assist: AssistSnapshot;
+  tutorial: TutorialState;
   mission: {
     kills: number;
     requiredKills: number;
@@ -302,6 +417,14 @@ export type SimEvent =
   | { type: 'boss-destroyed' }
   | { type: 'afterburner' }
   | { type: 'resupply' }
+  | { type: 'maneuver-start'; id: ManeuverId }
+  | { type: 'maneuver-end'; id: ManeuverId }
+  | { type: 'maneuver-blocked'; id: ManeuverId; reason: string }
+  | { type: 'assist-toggle'; enabled: boolean; id: AssistId | 'master' }
+  | { type: 'assist-engaged'; id: AssistId }
+  | { type: 'stall' }
+  | { type: 'tutorial-complete' }
+  | { type: 'tutorial-dismissed' }
   | { type: 'mission-complete' }
   | { type: 'mission-failed' };
 
@@ -326,4 +449,7 @@ export interface AudioTelemetry {
   missileWarning: boolean;
   bossActive: boolean;
   elapsed: number;
+  maneuver: ManeuverId | null;
+  airbrake: boolean;
+  assistEngaged: number;
 }

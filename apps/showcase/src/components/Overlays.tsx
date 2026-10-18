@@ -1,5 +1,11 @@
 import { useEffect, useRef } from 'react';
-import type { CockpitAudio, CockpitQuality, CockpitSnapshot } from '@theve/ui';
+import type {
+  AssistId,
+  AssistSettings,
+  CockpitAudio,
+  CockpitQuality,
+  CockpitSnapshot,
+} from '@theve/ui';
 import {
   Button,
   IconArrowRight,
@@ -22,11 +28,33 @@ const CONTROLS: Array<[string, string, string]> = [
   ['A / D', '滚转', 'ROLL'],
   ['Q / E', '偏航', 'YAW'],
   ['SHIFT / CTRL', '油门', 'THROTTLE'],
+  ['C', '高G转弯（按住）', 'HIGH-G'],
+  ['X', '减速板（按住）', 'AIRBRAKE'],
+  ['Z / V', '眼镜蛇 / 桶滚', 'COBRA / BARREL'],
+  ['B / N / K', '破S / 殷麦曼 / 库尔比特', 'SPLIT-S / IMMEL / KULBIT'],
   ['SPACE', '发射', 'FIRE'],
   ['J', '机炮', 'GUN'],
   ['TAB', '切换目标', 'TARGET'],
   ['F', '热焰弹', 'FLARE'],
+  ['Y', '辅助驾驶开关', 'FLIGHT AIDS'],
   ['P / ESC', '暂停', 'PAUSE'],
+];
+
+const MANEUVERS: Array<[string, string, string]> = [
+  ['C', '高G转弯', 'HIGH-G TURN'],
+  ['X', '减速板', 'AIRBRAKE'],
+  ['Z', '眼镜蛇机动', 'PUGACHEV COBRA'],
+  ['V', '桶滚', 'BARREL ROLL'],
+  ['B', '破S机动', 'SPLIT-S'],
+  ['N', '殷麦曼翻转', 'IMMELMANN'],
+  ['K', '库尔比特', 'KULBIT'],
+];
+
+const FLIGHT_AIDS: Array<[AssistId, string, string]> = [
+  ['attitude', '姿态辅助', '松杆自动消除滚转漂移，接近平飞时摆正机翼'],
+  ['steering', '目标引导', '目标在机头前方时轻微带杆，把敌机送进锁定锥'],
+  ['throttle', '自动油门', '松手后自动补油门保持交战速度，绝不违背你的油门指令'],
+  ['terrain', '低空保护', '低空提醒并在触地前柔和拉起'],
 ];
 
 const noop = () => undefined;
@@ -71,7 +99,7 @@ function useModalFocus(onClose: () => void) {
 function ControlRecap({ dense = false }: { dense?: boolean }) {
   return (
     <dl className={cx('overlay-controls', dense && 'overlay-controls--dense')}>
-      {CONTROLS.slice(0, dense ? 6 : 9).map(([keys, zh, en]) => (
+      {CONTROLS.slice(0, dense ? 8 : CONTROLS.length).map(([keys, zh, en]) => (
         <div key={keys}>
           <dt>
             {keys.split(' / ').map((key) => (
@@ -85,6 +113,69 @@ function ControlRecap({ dense = false }: { dense?: boolean }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+function ManeuverRecap() {
+  return (
+    <dl className="overlay-controls overlay-controls--dense overlay-controls--maneuvers">
+      {MANEUVERS.map(([key, zh, en]) => (
+        <div key={key}>
+          <dt>
+            <Keycap>{key}</Keycap>
+          </dt>
+          <dd>
+            {zh}
+            <span className="tv-mono">{en}</span>
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+export interface FlightAidSettingsProps {
+  assists: AssistSettings;
+  master: boolean;
+  onSetAssist: (id: AssistId, enabled: boolean) => void;
+  onSetAll: (enabled: boolean) => void;
+}
+
+function FlightAidSettings({
+  assists,
+  master,
+  onSetAssist,
+  onSetAll,
+}: FlightAidSettingsProps) {
+  const allOn = FLIGHT_AIDS.every(([id]) => assists[id]);
+  return (
+    <div className="aid-settings">
+      <div className="aid-settings__head">
+        <span className="tv-mono">
+          {master ? 'ASSIST BUS ONLINE' : 'ASSIST BUS CUT'}
+        </span>
+        <Toggle
+          checked={allOn}
+          onCheckedChange={(checked) => onSetAll(checked)}
+          label={allOn ? '全开' : '自定义'}
+        />
+      </div>
+      <ul className="aid-settings__list">
+        {FLIGHT_AIDS.map(([id, zh, hint]) => (
+          <li key={id}>
+            <div className="aid-settings__text">
+              <strong>{zh}</strong>
+              <small>{hint}</small>
+            </div>
+            <Toggle
+              checked={assists[id]}
+              onCheckedChange={(checked) => onSetAssist(id, checked)}
+              label={assists[id] ? 'ON' : 'OFF'}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -169,6 +260,10 @@ export function BriefingOverlay({ onLaunch, onExit, muted }: BriefingOverlayProp
             <div className="brief-panel__controls">
               <span className="brief-panel__controls-title tv-mono">QUICK CONTROLS</span>
               <ControlRecap dense />
+              <span className="brief-panel__controls-title tv-mono">
+                MANOEUVRE / 机动 (C X Z V B N K)
+              </span>
+              <ManeuverRecap />
             </div>
           </div>
 
@@ -347,6 +442,10 @@ export interface PauseOverlayProps {
   setQuality: (quality: CockpitQuality) => void;
   invertPitch: boolean;
   setInvertPitch: (invert: boolean) => void;
+  assists: AssistSettings;
+  assistMaster: boolean;
+  setAssist: (id: AssistId, enabled: boolean) => void;
+  setAllAssists: (enabled: boolean) => void;
   onResume: () => void;
   onRestart: () => void;
   onExit: () => void;
@@ -364,6 +463,10 @@ export function PauseOverlay({
   setQuality,
   invertPitch,
   setInvertPitch,
+  assists,
+  assistMaster,
+  setAssist,
+  setAllAssists,
   onResume,
   onRestart,
   onExit,
@@ -371,7 +474,7 @@ export function PauseOverlay({
   const ref = useModalFocus(onResume);
   return (
     <div className="game-overlay game-overlay--dialog" role="dialog" aria-modal="true" aria-labelledby="pause-title">
-      <div className="dialog-panel" ref={ref}>
+      <div className="dialog-panel dialog-panel--wide" ref={ref}>
         <div className="dialog-panel__head">
           <span className="tv-eyebrow">SIMULATION FROZEN</span>
           <span className="tv-mono dialog-panel__code">TACS-8 / PAUSE</span>
@@ -383,7 +486,7 @@ export function PauseOverlay({
         <p className="dialog-panel__copy">
           空域时间已停止。所有武器保险已合上，雷达进入待机扫描。
         </p>
-        <div className="dialog-panel__grid">
+        <div className="dialog-panel__grid dialog-panel__grid--three">
           <section className="dialog-panel__section">
             <h3 className="tv-mono">SETTINGS / 设置</h3>
             <div className="settings-row">
@@ -436,12 +539,23 @@ export function PauseOverlay({
             </p>
           </section>
           <section className="dialog-panel__section">
-            <h3 className="tv-mono">FLIGHT CONTROLS / 操作</h3>
-            <ControlRecap />
+            <h3 className="tv-mono">FLIGHT AIDS / 辅助驾驶</h3>
+            <FlightAidSettings
+              assists={assists}
+              master={assistMaster}
+              onSetAssist={setAssist}
+              onSetAll={setAllAssists}
+            />
             <div className="dialog-panel__tip">
               <IconScan size={14} />
-              <span>按住空格连续发射导弹？不，先锁定，再呼吸。热焰弹对来袭导弹有效。</span>
+              <span>
+                辅助只在你松杆的轴上出力，任何直接输入都会立刻夺回控制权；按 Y 可以随时整组开关。
+              </span>
             </div>
+          </section>
+          <section className="dialog-panel__section">
+            <h3 className="tv-mono">CONTROLS / 操作</h3>
+            <ControlRecap />
           </section>
         </div>
         <div className="dialog-panel__actions">
@@ -459,7 +573,7 @@ export function PauseOverlay({
           <span>
             <Keycap>ESC</Keycap> 恢复
           </span>
-          <span>THEVE // TACS-8 · SIMULATION CORE</span>
+          <span>THEVE // TACS-8 · SIMULATION CORE v0.2</span>
         </div>
       </div>
     </div>
@@ -482,29 +596,43 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
           飞行手册
           <span>COCKPIT MANUAL</span>
         </h2>
-        <div className="dialog-panel__grid">
+        <div className="dialog-panel__grid dialog-panel__grid--three">
           <section className="dialog-panel__section">
             <h3 className="tv-mono">CONTROLS / 操作</h3>
             <ControlRecap />
+          </section>
+          <section className="dialog-panel__section">
+            <h3 className="tv-mono">MANOEUVRES / 机动</h3>
+            <ManeuverRecap />
+            <div className="dialog-panel__tip">
+              <IconScan size={14} />
+              <span>
+                C / X 按住持续生效；Z V B N K 为一次性动作，动作期间由飞控接管，结束后立刻交还操纵。
+              </span>
+            </div>
           </section>
           <section className="dialog-panel__section">
             <h3 className="tv-mono">TACTICS / 战术提示</h3>
             <ol className="help-tips">
               <li>
                 <strong>先锁定，后发射。</strong>
-                保持目标在准星内约 1 秒；一旦锁定，只要目标还在前方就不会丢失。
+                保持目标在准星内约 1 秒；目标引导辅助会把机头轻轻带过去，但决定权在你。
               </li>
               <li>
                 <strong>热焰弹是保命键。</strong>
-                RWR 告警后按 F，60% 概率诱骗来袭导弹。
+                RWR 告警后按 F，60% 概率诱骗来袭导弹；桶滚 V 也能直接甩掉跟踪。
+              </li>
+              <li>
+                <strong>高G转弯换角度，减速板换位置。</strong>
+                咬不住时按住 C 收紧盘旋，被咬住时按 X 让他冲前。
               </li>
               <li>
                 <strong>护盾节点只吃导弹。</strong>
                 机炮可以补刀，但优先把 AAM 留给巨兽的弱点。
               </li>
               <li>
-                <strong>注意弹幕预警。</strong>
-                FLAK BURST 出现后立刻滚转脱离，不要直线飞行。
+                <strong>垂直机动是脱离弹幕的答案。</strong>
+                破S 用高度换速度，殷麦曼一次掉头 180° 并抢回高度。
               </li>
             </ol>
           </section>

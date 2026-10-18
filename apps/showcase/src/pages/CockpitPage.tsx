@@ -284,6 +284,10 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
           setQuality={settings.setQuality}
           invertPitch={settings.invertPitch}
           setInvertPitch={settings.setInvertPitch}
+          assists={settings.assists}
+          assistMaster={snapshot.assist.master}
+          setAssist={settings.setAssist}
+          setAllAssists={settings.setAllAssists}
           onResume={closeOverlay}
           onRestart={retry}
           onExit={() => onNavigate('attract')}

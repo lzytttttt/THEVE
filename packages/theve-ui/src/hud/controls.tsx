@@ -3,11 +3,13 @@ import { cx, IconButton, Keycap } from '../primitives';
 import {
   IconFlame,
   IconMissile,
+  IconScan,
   IconSoundOff,
   IconSoundOn,
   IconTarget,
   IconWarning,
 } from '../icons';
+import { AssistRail, ManeuverRail } from './maneuvers';
 
 export interface CockpitControlsProps {
   className?: string;
@@ -21,9 +23,10 @@ export function CockpitControls({ className }: CockpitControlsProps) {
   const snapshot = useCockpit();
   const actions = useCockpitActions();
   const audio = useAudio();
-  const { weapons, lock, flight } = snapshot;
+  const { weapons, lock, flight, maneuver, assist } = snapshot;
   const throttlePercent = Math.round(flight.throttle * 100);
   const afterburner = flight.throttle > 0.88;
+  const activeManeuver = maneuver.list.find((item) => item.active) ?? null;
 
   const fire = () => {
     if (weapons.selected === 'gun') actions.startGun();
@@ -36,7 +39,7 @@ export function CockpitControls({ className }: CockpitControlsProps) {
         <div className="tv-controls__module-head">
           <span>THROTTLE</span>
           <span className={cx('tv-mono', afterburner && 'tv-amber')}>
-            {afterburner ? 'AFTERBURNER' : 'MIL POWER'}
+            {flight.airbrake ? 'BRAKE' : afterburner ? 'AFTERBURNER' : 'MIL POWER'}
           </span>
         </div>
         <div className="tv-throttle">
@@ -114,6 +117,26 @@ export function CockpitControls({ className }: CockpitControlsProps) {
         </div>
       </div>
 
+      <div className="tv-controls__module tv-controls__maneuver">
+        <div className="tv-controls__module-head">
+          <span>MANOEUVRE</span>
+          <span className="tv-mono">
+            {activeManeuver ? activeManeuver.code : flight.postStall ? 'POST STALL' : 'READY'}
+          </span>
+        </div>
+        <ManeuverRail compact />
+      </div>
+
+      <div className="tv-controls__module tv-controls__aids">
+        <div className="tv-controls__module-head">
+          <span>FLIGHT AIDS</span>
+          <span className={cx('tv-mono', assist.engaged.length > 0 && 'tv-cyan')}>
+            {assist.master ? `${assist.engaged.length} ACTIVE` : 'OFF'}
+          </span>
+        </div>
+        <AssistRail compact />
+      </div>
+
       <div className="tv-controls__module tv-controls__trigger">
         <div className="tv-controls__module-head">
           <span>WEAPON RELEASE</span>
@@ -155,6 +178,13 @@ export function CockpitControls({ className }: CockpitControlsProps) {
       </div>
 
       <div className="tv-controls__utility">
+        <IconButton
+          label={assist.master ? '关闭辅助驾驶' : '开启辅助驾驶'}
+          onClick={() => actions.toggleAssists()}
+          className={cx('tv-controls__assist', assist.master && 'is-on')}
+        >
+          <IconScan size={15} />
+        </IconButton>
         <IconButton
           label={audio.muted ? '取消静音' : '静音'}
           onClick={audio.toggleMute}

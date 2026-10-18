@@ -104,6 +104,9 @@ const SAMPLE_LOCK: LockState = {
   state: 'locked',
   distance: 1240,
   inCone: true,
+  steering: 0,
+  elevation: 0,
+  assisted: false,
 };
 
 const SAMPLE_BOSS: BossHud = {
@@ -205,7 +208,7 @@ export function SystemsPage({ onNavigate }: SystemsPageProps) {
           </a>
         </nav>
         <div className="systems-head__meta">
-          <span className="systems-head__build tv-mono">V0.1.0 / TACS-8</span>
+          <span className="systems-head__build tv-mono">V0.2.0 / TACS-8</span>
           <Button variant="primary" kbd="↗" onClick={() => onNavigate('cockpit')}>
             进入座舱
           </Button>

@@ -55,6 +55,34 @@ try {
   await page.waitForTimeout(1500);
   await shot('03-dogfight-1920');
 
+  // v0.2 handling: the held manoeuvre and the first-flight checklist.
+  await page.evaluate(() => {
+    const engine = window.__THEVE__.engine;
+    engine.setThrottle(0.95);
+  });
+  await page.waitForTimeout(1400);
+  await page.keyboard.down('c');
+  await page.keyboard.down('s');
+  await page.waitForTimeout(900);
+  await shot('03b-highg-turn-1920');
+  await page.keyboard.up('s');
+  await page.keyboard.up('c');
+  await page.waitForTimeout(400);
+
+  await page.keyboard.press('z');
+  await page.waitForTimeout(700);
+  await shot('03c-cobra-1920');
+  await page.waitForTimeout(1600);
+
+  await page.keyboard.press('y');
+  await page.waitForTimeout(400);
+  const assistOff = await page.evaluate(
+    () => window.__THEVE__?.snapshot().assist.master === false,
+  );
+  console.log('assist master toggled off via Y:', assistOff);
+  await page.keyboard.press('y');
+  await page.waitForTimeout(300);
+
   await page.evaluate(() => window.__THEVE__?.triggerBoss());
   await page.waitForTimeout(1400);
   await shot('04-boss-1920');
