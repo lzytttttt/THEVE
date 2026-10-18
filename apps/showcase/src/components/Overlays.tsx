@@ -573,7 +573,7 @@ export function PauseOverlay({
           <span>
             <Keycap>ESC</Keycap> 恢复
           </span>
-          <span>THEVE // TACS-8 · SIMULATION CORE v0.2</span>
+          <span>THEVE // TACS-8 · SIMULATION CORE v0.3</span>
         </div>
       </div>
     </div>

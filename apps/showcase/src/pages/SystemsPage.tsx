@@ -35,6 +35,8 @@ import {
   WeaponRack,
   WingmanStatus,
   formatClock,
+  SCORE_SECTIONS,
+  SECTION_ORDER,
   type BossHud,
   type CommsMessage,
   type HudTarget,
@@ -208,7 +210,7 @@ export function SystemsPage({ onNavigate }: SystemsPageProps) {
           </a>
         </nav>
         <div className="systems-head__meta">
-          <span className="systems-head__build tv-mono">V0.2.0 / TACS-8</span>
+          <span className="systems-head__build tv-mono">V0.3.0 / TACS-8</span>
           <Button variant="primary" kbd="↗" onClick={() => onNavigate('cockpit')}>
             进入座舱
           </Button>
@@ -630,7 +632,12 @@ export function SystemsPage({ onNavigate }: SystemsPageProps) {
             </section>
 
             <section className="systems-section" id="systems-06">
-              <SectionHead number="06" en="Sound & Motion" zh="声音与动效" desc="所有声音实时合成，没有音频文件。" />
+              <SectionHead
+                number="06"
+                en="Sound & Motion"
+                zh="声音与动效"
+                desc="v0.3 起配乐是一台真正的编曲机：六个段落、十条写好的旋律、一把太鼓。"
+              />
               <div className="sound-panel">
                 <div className="sound-panel__visual" aria-hidden="true">
                   <div className="sound-bars">
@@ -639,24 +646,62 @@ export function SystemsPage({ onNavigate }: SystemsPageProps) {
                     ))}
                   </div>
                   <span className="sound-panel__scan" />
-                  <span className="sound-panel__label tv-mono">AUDIO CORE / D MINOR / 72 BPM</span>
+                  <span className="sound-panel__label tv-mono">AUDIO CORE / D MINOR / 62–108 BPM</span>
                 </div>
                 <div className="sound-panel__copy">
                   <Tag tone="cyan">WEBAUDIO</Tag>
                   <h3>原创程序化主题</h3>
                   <p>
-                    双锯齿引擎随油门变调，风噪随速度增强；锁定单音、RWR 双音、导弹发射、
-                    爆炸和热焰弹由模拟事件触发。无人机与巨兽阶段加入低频层。
+                    双锯齿引擎随油门变调，风噪随速度增强；锁定单音随锁定进度爬升，
+                    导弹掠过时按真实声速延迟播放多普勒呼啸。爆炸按距离衰减高频并延迟到达，
+                    远处弹幕因此听起来真的远。
                   </p>
                   <div className="sound-panel__grid tv-mono">
                     <span>ENGINE / SAW + NOISE</span>
-                    <span>LOCK / 980 HZ SQUARE</span>
-                    <span>RWR / 660 HZ TRIANGLE</span>
-                    <span>SCORE / Dm · Bb · F · C</span>
+                    <span>LOCK / 620 → 1240 HZ</span>
+                    <span>HIT / METALLIC PING</span>
+                    <span>SCORE / 6 CUES · 10 PHRASES</span>
                   </div>
                   <span className="component-note">首次 LAUNCH 手势才创建 AudioContext；没有版权音频。</span>
                 </div>
               </div>
+
+              <div className="score-table" role="table" aria-label="v0.3 配乐段落">
+                <div className="score-table__head tv-mono" role="row">
+                  <span role="columnheader">CUE</span>
+                  <span role="columnheader">BPM</span>
+                  <span role="columnheader">PROGRESSION</span>
+                  <span role="columnheader">ARRANGEMENT</span>
+                </div>
+                {SECTION_ORDER.map((id) => {
+                  const section = SCORE_SECTIONS[id];
+                  return (
+                    <div className="score-table__row" role="row" key={id}>
+                      <span className="score-table__name" role="cell">
+                        <strong>{section.labelZh}</strong>
+                        <em className="tv-mono">{id.toUpperCase()}</em>
+                      </span>
+                      <span className="tv-mono" role="cell">
+                        {section.bpm}
+                      </span>
+                      <span className="tv-mono score-table__chords" role="cell">
+                        {section.progression.join(' · ')}
+                      </span>
+                      <span className="score-table__mix" role="cell">
+                        <i style={{ width: `${Math.round(section.energy * 100)}%` }} />
+                        <em className="tv-mono">
+                          {section.ostinato === 'none' ? 'PAD + LEAD' : `OSTINATO ×${section.ostinato === 'sixteenth' ? 16 : 8}`}
+                        </em>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="component-note">
+                段落只在小节线上切换，且至少停留两小节；章节曲线（翱翔 → 制空 → 强攻 → 巨兽）由模拟的
+                <span className="tv-mono"> intensity </span>
+                单一数值驱动，画面调色与配器读的是同一个数。
+              </p>
             </section>
 
             <section className="systems-section" id="systems-07">

@@ -4,11 +4,12 @@ import { Button, Meter, Readout, Tag, Toggle } from '../src/primitives';
 import { HeadingTape, SpeedTape } from '../src/hud/instruments';
 import { RadarScope } from '../src/hud/systems';
 import { GLoadMeter, ManeuverRail, StartupChecklist } from '../src/hud/maneuvers';
+import { DamageDirection, HitConfirm, KillTicker } from '../src/hud/combat';
 import { formatClock, formatMach, formatRange } from '../src/hud/format';
 import { buildManeuverStatus, MANEUVER_ORDER, MANEUVERS } from '../src/sim/maneuvers';
 import { ASSIST_ORDER, buildAssistStatus } from '../src/sim/assists';
 import { buildTutorialState, createTutorialFlags } from '../src/sim/tutorial';
-import type { CockpitSnapshot } from '../src/sim/types';
+import type { CockpitSnapshot, HitMarker, IncomingHit, KillFeedEntry } from '../src/sim/types';
 
 const noop = () => undefined;
 
@@ -94,6 +95,14 @@ function stubSnapshot(overrides: Partial<CockpitSnapshot> = {}): CockpitSnapshot
       ),
     },
     tutorial: buildTutorialState(createTutorialFlags(), false, true),
+    combat: {
+      hit: null,
+      incoming: [],
+      kills: [],
+      intensity: 0.4,
+      threat: 0.3,
+      combo: 0,
+    },
     mission: {
       kills: 0,
       requiredKills: 2,
@@ -256,5 +265,95 @@ describe('v0.2 handling instruments', () => {
     expect(list.map((item) => item.id)).toEqual(ASSIST_ORDER);
     expect(list.find((item) => item.id === 'steering')?.enabled).toBe(false);
     expect(list.find((item) => item.id === 'attitude')?.enabled).toBe(true);
+  });
+});
+
+function hitMarker(overrides: Partial<HitMarker> = {}): HitMarker {
+  return { id: 1, age: 0.05, duration: 0.42, damage: 6.4, kill: false, kind: 'fighter', ...overrides };
+}
+
+describe('v0.3 impact feedback', () => {
+  it('renders nothing at all when the air is quiet', () => {
+    const { container } = render(
+      <>
+        <HitConfirm hit={null} />
+        <DamageDirection hits={[]} />
+        <KillTicker entries={[]} />
+      </>,
+    );
+    expect(container.querySelector('.tv-hitconfirm')).toBeNull();
+    expect(container.querySelector('.tv-incoming')).toBeNull();
+    expect(container.querySelector('.tv-kills')).toBeNull();
+  });
+
+  it('pops a hit marker with the damage it dealt, without spamming screen readers', () => {
+    render(<HitConfirm hit={hitMarker()} combo={4} />);
+    expect(screen.getByText('6')).toBeInTheDocument();
+    expect(screen.getByText('×4')).toBeInTheDocument();
+    const marker = document.querySelector('.tv-hitconfirm');
+    expect(marker?.className).not.toContain('is-kill');
+    // A burst connects many times a second, so the marker is visual only.
+    expect(marker).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryAllByRole('status')).toHaveLength(0);
+    // The marker is a pure function of age, not a self-running animation.
+    expect(Number((marker as HTMLElement).style.getPropertyValue('--tv-hit-opacity'))).toBeGreaterThan(0.9);
+  });
+
+  it('switches the marker to the weakpoint and kill variants', () => {
+    const { container: weak } = render(<HitConfirm hit={hitMarker({ kind: 'weakpoint' })} />);
+    expect(weak.querySelector('.tv-hitconfirm')?.className).toContain('is-weakpoint');
+    expect(weak.querySelector('.tv-hitconfirm')?.className).toContain('is-weakpoint');
+
+    const { container: kill } = render(
+      <HitConfirm hit={hitMarker({ kill: true, damage: 200 })} />,
+    );
+    expect(kill.querySelector('.tv-hitconfirm')?.className).toContain('is-kill');
+    expect(kill.querySelector('.tv-hitconfirm__ring')).not.toBeNull();
+    expect(kill.querySelector('.tv-hitconfirm')?.className).toContain('is-kill');
+  });
+
+  it('fades the hit marker out as its age approaches its duration', () => {
+    const { container } = render(<HitConfirm hit={hitMarker({ age: 0.4 })} />);
+    const marker = container.querySelector('.tv-hitconfirm') as HTMLElement;
+    const opacity = Number(marker.style.getPropertyValue('--tv-hit-opacity'));
+    expect(opacity).toBeLessThan(0.2);
+    expect(opacity).toBeGreaterThanOrEqual(0);
+  });
+
+  it('lays damage wedges on their bearing and by severity', () => {
+    const hits: IncomingHit[] = [
+      { id: 1, age: 0.2, duration: 2.1, amount: 14, bearing: 92, severity: 'critical' },
+      { id: 2, age: 1.9, duration: 2.1, amount: 6, bearing: 271, severity: 'caution' },
+    ];
+    const { container } = render(<DamageDirection hits={hits} />);
+    const wedges = container.querySelectorAll('.tv-incoming__wedge');
+    expect(wedges).toHaveLength(2);
+    expect((wedges[0] as HTMLElement).style.getPropertyValue('--tv-bearing')).toBe('92.0deg');
+    expect(wedges[0]?.className).toContain('critical');
+    expect(wedges[1]?.className).toContain('caution');
+    // The older wedge is nearly gone.
+    const oldOpacity = Number(
+      (wedges[1] as HTMLElement).style.getPropertyValue('--tv-incoming-opacity'),
+    );
+    const newOpacity = Number(
+      (wedges[0] as HTMLElement).style.getPropertyValue('--tv-incoming-opacity'),
+    );
+    expect(oldOpacity).toBeLessThan(newOpacity);
+  });
+
+  it('lists kills newest first with their score and reads them out', () => {
+    const entries: KillFeedEntry[] = [
+      { id: 3, age: 0.2, duration: 4.2, callsign: 'VESPER ACE', label: 'Su-57', points: 180, ace: true, weakpoint: false },
+      { id: 2, age: 1.4, duration: 4.2, callsign: 'SHIELD NODE A', label: 'SHIELD NODE A', points: 500, ace: false, weakpoint: true },
+    ];
+    const { container } = render(<KillTicker entries={entries} />);
+    const rows = container.querySelectorAll('.tv-kills__row');
+    expect(rows).toHaveLength(2);
+    expect(screen.getByText('VESPER ACE')).toBeInTheDocument();
+    expect(screen.getByText('+180')).toBeInTheDocument();
+    expect(rows[0]?.className).toContain('is-ace');
+    expect(rows[1]?.className).toContain('is-weakpoint');
+    // Kills are the one combat event worth reading out.
+    expect(screen.getByRole('log', { name: '击坠记录' })).toBeInTheDocument();
   });
 });

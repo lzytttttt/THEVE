@@ -1363,6 +1363,101 @@
   letter-spacing: 0.05em;
 }
 
+/* v0.3 score cues --------------------------------------------------- */
+.score-table {
+  margin-top: 14px;
+  border: 1px solid rgba(99, 243, 255, 0.12);
+  background: linear-gradient(160deg, rgba(8, 24, 34, 0.72), rgba(4, 12, 18, 0.4));
+}
+
+.score-table__head,
+.score-table__row {
+  display: grid;
+  grid-template-columns: 150px 46px 1fr 214px;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 14px;
+}
+
+.score-table__head {
+  color: rgba(134, 163, 174, 0.55);
+  font-size: 6px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(99, 243, 255, 0.12);
+}
+
+.score-table__row + .score-table__row {
+  border-top: 1px solid rgba(99, 243, 255, 0.07);
+}
+
+.score-table__row:hover {
+  background: rgba(99, 243, 255, 0.04);
+}
+
+.score-table__name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.score-table__name strong {
+  color: var(--tv-ice);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.score-table__name em {
+  color: rgba(134, 163, 174, 0.5);
+  font-size: 6px;
+  font-style: normal;
+  letter-spacing: 0.2em;
+}
+
+.score-table__chords {
+  color: var(--tv-cyan-dim);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+}
+
+.score-table__mix {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.score-table__mix i {
+  display: block;
+  height: 4px;
+  min-width: 4px;
+  background: linear-gradient(90deg, var(--tv-cyan-dim), var(--tv-amber));
+  box-shadow: 0 0 8px rgba(255, 181, 71, 0.4);
+}
+
+.score-table__mix em {
+  color: rgba(134, 163, 174, 0.5);
+  font-size: 6px;
+  font-style: normal;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .score-table__head {
+    display: none;
+  }
+
+  .score-table__row {
+    grid-template-columns: 1fr auto;
+    gap: 4px 12px;
+  }
+
+  .score-table__chords,
+  .score-table__mix {
+    grid-column: 1 / -1;
+  }
+}
+
 /* implementation ---------------------------------------------------- */
 .code-block {
   max-height: 340px;

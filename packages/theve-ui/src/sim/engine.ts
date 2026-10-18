@@ -2,6 +2,7 @@ import {
   add,
   angleBetween,
   approach,
+  bearingDegrees,
   clamp,
   damp,
   distance,
@@ -41,11 +42,17 @@ import type {
   AudioTelemetry,
   BossHud,
   CockpitSnapshot,
+  CombatFeedback,
   CommsMessage,
   CommsRole,
   ControlInput,
+  EffectColor,
+  EffectKind,
   FlightState,
+  HitMarker,
   HudTarget,
+  IncomingHit,
+  KillFeedEntry,
   LockState,
   ManeuverId,
   ManeuverSnapshot,
@@ -113,9 +120,46 @@ const BOSS_WEAKPOINT_LABEL: Record<WeakpointKey, string> = {
   core: 'REACTOR CORE',
 };
 
+/* --- v0.3 impact feedback ------------------------------------------- */
+/** How long the HUD keeps a hit marker up. */
+const HIT_MARKER_TIME = 0.42;
+/** Kill ticker lines linger long enough to be read after the explosion. */
+const KILL_FEED_TIME = 4.2;
+/** Damage wedges point at the shooter for roughly two seconds. */
+const INCOMING_TIME = 2.1;
+/** Sliding window used for the combo counter. */
+const COMBO_WINDOW = 2;
+/** Hard ceiling on live effects; the oldest low-value ones are dropped first. */
+const EFFECT_BUDGET = 190;
+/** Effects that may be recycled early when the budget is full, cheapest first. */
+const EFFECT_PRIORITY: Record<EffectKind, number> = {
+  spark: 0,
+  smoke: 1,
+  tracer: 2,
+  debris: 3,
+  muzzle: 4,
+  flak: 5,
+  flash: 6,
+  explosion: 7,
+  shield: 8,
+  shockwave: 9,
+};
+/** Ambient battlefield flak cadence per phase, in seconds. */
+const AMBIENCE_INTERVAL: Partial<Record<MissionPhase, [number, number]>> = {
+  dogfight: [2.6, 4.8],
+  boss: [1.5, 3.1],
+};
+
 interface FlakStrike {
   at: number;
   offset: Vec3;
+}
+
+/** A scheduled background burst that decorates the sky but never damages. */
+interface AmbientStrike {
+  at: number;
+  position: Vec3;
+  scale: number;
 }
 
 interface GunTarget {
@@ -245,6 +289,17 @@ export class CockpitEngine {
   private warnings: WarningState[] = [];
   private idCounter = 0;
 
+  /* --- v0.3 impact feedback ------------------------------------------ */
+  private hitMarker: HitMarker | null = null;
+  private incoming: IncomingHit[] = [];
+  private killFeed: KillFeedEntry[] = [];
+  private comboHits: number[] = [];
+  private feedbackId = 0;
+  private intensity = 0;
+  private threat = 0;
+  private ambience: AmbientStrike[] = [];
+  private ambienceTimer = 0;
+
   constructor(scenario: Scenario = sunsetSpearScenario) {
     this.scenario = scenario;
     this.reset();
@@ -333,6 +388,15 @@ export class CockpitEngine {
     this.comms = [];
     this.warnings = [];
     this.idCounter = 0;
+    this.hitMarker = null;
+    this.incoming = [];
+    this.killFeed = [];
+    this.comboHits = [];
+    this.feedbackId = 0;
+    this.intensity = 0;
+    this.threat = 0;
+    this.ambience = [];
+    this.ambienceTimer = 1.6;
   }
 
   launch(): void {
@@ -687,6 +751,7 @@ export class CockpitEngine {
       life: 8,
       maxLife: 8,
       owner: 'player',
+      whooshed: false,
     };
     missile.maxLife = 8;
     missile.life = 8;
@@ -795,6 +860,8 @@ export class CockpitEngine {
 
     this.elapsed += step;
     this.updateEffectsLifetime(step);
+    this.updateCombatFeedback(step);
+    this.updateAmbience(step);
     this.flareCooldown = Math.max(0, this.flareCooldown - step);
     this.fireCooldown = Math.max(0, this.fireCooldown - step);
     this.throttleIdle += step;
@@ -1161,9 +1228,15 @@ export class CockpitEngine {
       ? target.point
       : add(origin, scale(forward, 1600));
     this.spawnEffect('tracer', origin, { to: end, scale: 1, color: 'amber', life: 0.12 });
+    // Muzzle flash at the gun port — a one-frame bloom that makes the burst read.
+    this.spawnEffect('muzzle', origin, {
+      scale: 6.5,
+      color: 'amber',
+      life: 0.07,
+      velocity: scale(forward, 40),
+    });
     if (target) {
-      this.applyDamage(target.entity, 5 + Math.random() * 3, 'player');
-      this.spawnEffect('explosion', target.point, { scale: 2.4, color: 'amber', life: 0.18 });
+      this.applyDamage(target.entity, 5 + Math.random() * 3, 'player', false, 'gun');
     }
   }
 
@@ -1272,6 +1345,7 @@ export class CockpitEngine {
       life: 9,
       maxLife: 9,
       owner: 'hostile',
+      whooshed: false,
     };
     missile.life = 9;
     missile.maxLife = 9;
@@ -1362,6 +1436,12 @@ export class CockpitEngine {
       entity.position = add(entity.position, scale(forward, entity.missile.speed * dt));
       entity.roll = Math.sin(this.elapsed * 9) * 0.3;
 
+      const closing = distance(entity.position, this.flight.position);
+      if (!entity.missile.whooshed && closing < 420) {
+        entity.missile.whooshed = true;
+        this.emit({ type: 'flyby', team: entity.team, distance: closing });
+      }
+
       if (distance(entity.position, targetPoint) < 62) {
         entity.alive = false;
         this.detonateMissile(entity, target);
@@ -1378,21 +1458,30 @@ export class CockpitEngine {
 
   private detonateMissile(missile: SimEntity, target: SimEntity | null | 'player'): void {
     const impact = missile.position;
+    const mine = missile.team === 'player';
     this.spawnEffect('explosion', impact, {
-      scale: missile.team === 'player' ? 18 : 16,
+      scale: mine ? 20 : 17,
       color: 'amber',
       life: 0.9,
     });
-    this.emit({ type: 'explosion', position: impact, scale: 16 });
-    if (missile.team === 'hostile') {
+    this.spawnEffect('flash', impact, { scale: mine ? 90 : 72, color: 'white', life: 0.2 });
+    this.spawnEffect('shockwave', impact, { scale: mine ? 44 : 36, color: 'amber', life: 0.55 });
+    this.spawnSparks(impact, 'amber', mine ? 9 : 6, 1.2);
+    this.emit({
+      type: 'explosion',
+      position: impact,
+      scale: 16,
+      distance: distance(impact, this.flight.position),
+    });
+    if (!mine) {
       if (missile.missile?.targetId === 'player') {
-        this.damagePlayer(12);
+        this.damagePlayer(12, impact);
       }
       return;
     }
     this.stats.missilesHit += 1;
     if (target && target !== 'player') {
-      this.applyDamage(target, target.kind === 'weakpoint' ? 120 : 200, 'player');
+      this.applyDamage(target, target.kind === 'weakpoint' ? 120 : 200, 'player', false, 'missile');
     }
   }
 
@@ -1436,7 +1525,7 @@ export class CockpitEngine {
 
     this.flakTimer -= dt;
     if (this.flakTimer <= 0) {
-      this.flakTimer = randomRange(4.6, 6.8);
+      this.flakTimer = randomRange(3.4, 5.2);
       this.flak = {
         at: this.elapsed + 2,
         offset: {
@@ -1451,8 +1540,18 @@ export class CockpitEngine {
       const impact = add(this.flight.position, this.flak.offset);
       this.flak = null;
       this.spawnEffect('explosion', impact, { scale: 28, color: 'amber', life: 1 });
-      this.emit({ type: 'explosion', position: impact, scale: 20 });
-      if (Math.random() < 0.28) this.damagePlayer(8);
+      this.spawnEffect('flash', impact, { scale: 120, color: 'white', life: 0.24 });
+      this.spawnSparks(impact, 'amber', 10, 1.5);
+      // A near miss rattles the airframe even when it does not connect.
+      const near = distance(impact, this.flight.position);
+      if (near < 130) this.spawnEffect('shockwave', impact, { scale: 46, color: 'amber', life: 0.6 });
+      this.emit({
+        type: 'explosion',
+        position: impact,
+        scale: 20,
+        distance: near,
+      });
+      if (Math.random() < 0.28) this.damagePlayer(8, impact);
     }
 
     this.droneTimer -= dt;
@@ -1534,7 +1633,12 @@ export class CockpitEngine {
     this.stats.rank = 'C';
     this.stats.score = this.score;
     this.spawnEffect('explosion', this.flight.position, { scale: 40, color: 'red', life: 1.4 });
-    this.emit({ type: 'explosion', position: this.flight.position, scale: 40 });
+    this.emit({
+      type: 'explosion',
+      position: this.flight.position,
+      scale: 40,
+      distance: 0,
+    });
     this.say(this.scenario.wingmanCallsign, 'wingman', 'LUMEN 1！跳伞！重复，跳伞！');
     this.emit({ type: 'mission-failed' });
   }
@@ -1732,16 +1836,42 @@ export class CockpitEngine {
     damage: number,
     source: 'player' | 'wingman',
     assist = false,
+    weapon: 'gun' | 'missile' = 'gun',
   ): void {
     if (!target.alive) return;
     target.hp = Math.max(0, target.hp - damage);
     const mine = source === 'player';
-    this.emit({ type: 'hit', targetId: target.id, damage, mine });
-    this.spawnEffect('explosion', target.position, {
-      scale: target.kind === 'fighter' ? 5 : 8,
-      color: 'amber',
-      life: 0.35,
+    const willKill =
+      !assist && target.hp <= 0 && (target.kind === 'fighter' || target.kind === 'weakpoint');
+    this.emit({
+      type: 'hit',
+      targetId: target.id,
+      damage,
+      mine,
+      weapon,
+      kind: target.kind === 'weakpoint' ? 'weakpoint' : 'fighter',
+      kill: willKill,
     });
+    if (mine) this.registerHit(target, damage, willKill);
+
+    if (target.kind === 'weakpoint') {
+      // The v0.3 shield read: a hard, cold hit that clearly says "not through yet".
+      this.spawnEffect('shield', target.position, { scale: 26, color: 'cyan', life: 0.42 });
+      this.spawnSparks(target.position, 'cyan', 3, 0.9);
+    } else {
+      this.spawnEffect('explosion', target.position, {
+        scale: weapon === 'missile' ? 8 : 4.6,
+        color: 'amber',
+        life: weapon === 'missile' ? 0.42 : 0.3,
+      });
+      this.spawnSparks(
+        target.position,
+        'amber',
+        weapon === 'missile' ? 8 : 4,
+        weapon === 'missile' ? 1.35 : 1,
+      );
+    }
+
     if (target.kind === 'fighter') {
       if (target.hp <= 0) {
         if (assist) {
@@ -1767,11 +1897,28 @@ export class CockpitEngine {
     target.hp = 0;
     this.spawnEffect('explosion', target.position, { scale: 28, color: 'red', life: 1.2 });
     this.spawnEffect('shockwave', target.position, { scale: 40, color: 'amber', life: 0.8 });
-    this.emit({ type: 'explosion', position: target.position, scale: 24 });
+    this.spawnEffect('flash', target.position, { scale: 60, color: 'white', life: 0.22 });
+    this.spawnDebris(target.position, 7, 1);
+    this.emit({
+      type: 'explosion',
+      position: target.position,
+      scale: 24,
+      distance: distance(target.position, this.flight.position),
+    });
     if (minedByPlayer) {
       this.kills += 1;
       this.stats.kills += 1;
-      this.score += target.variant === 'ace' ? 180 : 100;
+      const points = target.variant === 'ace' ? 180 : 100;
+      this.score += points;
+      this.registerKill(target, points, false);
+      this.emit({
+        type: 'kill',
+        targetId: target.id,
+        callsign: target.callsign,
+        label: target.label,
+        points,
+        ace: target.variant === 'ace',
+      });
       const lines =
         target.variant === 'ace'
           ? ['王牌掉了！这就是 CIRRUS 的答案。', 'VESPER ACE 被击落，敌编队正在崩溃。']
@@ -1793,8 +1940,25 @@ export class CockpitEngine {
     target.hp = 0;
     this.spawnEffect('explosion', target.position, { scale: 60, color: 'amber', life: 1.5 });
     this.spawnEffect('shockwave', target.position, { scale: 120, color: 'amber', life: 1.2 });
-    this.emit({ type: 'explosion', position: target.position, scale: 55 });
-    this.score += 500;
+    this.spawnEffect('flash', target.position, { scale: 180, color: 'white', life: 0.3 });
+    this.spawnDebris(target.position, 12, 1.6);
+    this.emit({
+      type: 'explosion',
+      position: target.position,
+      scale: 55,
+      distance: distance(target.position, this.flight.position),
+    });
+    const points = 500;
+    this.score += points;
+    this.registerKill(target, points, true);
+    this.emit({
+      type: 'kill',
+      targetId: target.id,
+      callsign: target.callsign,
+      label: target.label,
+      points,
+      ace: false,
+    });
 
     const boss = this.getEntity(this.bossId);
     const weakpoints = this.getWeakpoints();
@@ -1837,13 +2001,196 @@ export class CockpitEngine {
     }
   }
 
-  private damagePlayer(amount: number): void {
+  private damagePlayer(amount: number, from: Vec3 | null = null): void {
     if (this.phase === 'complete' || this.phase === 'failed') return;
     this.flight.hp = Math.max(0, this.flight.hp - amount);
     this.stats.damageTaken += amount;
-    this.warn('damage', 'warning', 'HULL DAMAGE', `结构损伤 -${amount}%`, 1.7);
-    this.emit({ type: 'damage', amount });
+    const bearing = from ? bearingDegrees(this.flight.yaw, this.flight.position, from) : 180;
+    this.warn(
+      'damage',
+      amount >= 10 ? 'critical' : 'warning',
+      'HULL DAMAGE',
+      `结构损伤 -${amount}%`,
+      1.7,
+      bearing,
+    );
+    this.registerIncoming(amount, bearing);
+    this.emit({ type: 'damage', amount, bearing });
     if (this.flight.hp <= 0) this.failMission();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.3 impact feedback                                                */
+  /* ------------------------------------------------------------------ */
+
+  /** Remember the last shot that connected so the HUD can flash a marker. */
+  private registerHit(target: SimEntity, damage: number, kill: boolean): void {
+    this.feedbackId += 1;
+    this.hitMarker = {
+      id: this.feedbackId,
+      age: 0,
+      duration: HIT_MARKER_TIME,
+      damage,
+      kill,
+      kind: target.kind === 'weakpoint' ? 'weakpoint' : 'fighter',
+    };
+    this.comboHits.push(this.elapsed);
+  }
+
+  private registerIncoming(amount: number, bearing: number): void {
+    this.feedbackId += 1;
+    this.incoming.push({
+      id: this.feedbackId,
+      age: 0,
+      duration: INCOMING_TIME,
+      amount,
+      bearing,
+      severity: amount >= 12 ? 'critical' : amount >= 8 ? 'warning' : 'caution',
+    });
+    if (this.incoming.length > 4) this.incoming.shift();
+  }
+
+  private registerKill(target: SimEntity, points: number, weakpoint: boolean): void {
+    this.feedbackId += 1;
+    this.killFeed.unshift({
+      id: this.feedbackId,
+      age: 0,
+      duration: KILL_FEED_TIME,
+      callsign: target.callsign,
+      label: target.label,
+      points,
+      ace: target.variant === 'ace',
+      weakpoint,
+    });
+    if (this.killFeed.length > 4) this.killFeed.length = 4;
+  }
+
+  /**
+   * Advance the transient feedback timers and re-derive the two atmosphere
+   * numbers (threat, intensity) that the score, the mix and the HUD grade all
+   * share, so the whole presentation breathes together.
+   */
+  private updateCombatFeedback(dt: number): void {
+    if (this.hitMarker) {
+      this.hitMarker.age += dt;
+      if (this.hitMarker.age > this.hitMarker.duration) this.hitMarker = null;
+    }
+    for (const hit of this.incoming) hit.age += dt;
+    this.incoming = this.incoming.filter((hit) => hit.age <= hit.duration);
+    for (const entry of this.killFeed) entry.age += dt;
+    this.killFeed = this.killFeed.filter((entry) => entry.age <= entry.duration);
+
+    const cutoff = this.elapsed - COMBO_WINDOW;
+    this.comboHits = this.comboHits.filter((at) => at >= cutoff);
+
+    let nearest = Number.POSITIVE_INFINITY;
+    for (const entity of this.entities) {
+      if (!entity.alive || entity.team !== 'hostile') continue;
+      if (entity.kind !== 'fighter' && entity.kind !== 'weakpoint') continue;
+      nearest = Math.min(nearest, distance(entity.position, this.flight.position));
+    }
+    const proximity = Number.isFinite(nearest) ? clamp(1 - nearest / 7000, 0, 1) : 0;
+    const inbound = this.entities.some(
+      (entity) =>
+        entity.alive &&
+        entity.kind === 'missile' &&
+        entity.team === 'hostile' &&
+        entity.missile?.targetId === 'player',
+    );
+    const rawThreat = clamp(proximity + (inbound ? 0.7 : 0), 0, 1);
+    this.threat = damp(this.threat, rawThreat, 1.6, dt);
+
+    const danger = inbound ? 1 : this.lockWasLocked ? 0.72 : this.lockProgress > 0 ? 0.42 : 0.16;
+    const base =
+      this.phase === 'boss'
+        ? 0.62
+        : this.phase === 'boss-intro'
+          ? 0.5
+          : this.phase === 'dogfight'
+            ? 0.28
+            : this.phase === 'boot' || this.phase === 'idle'
+              ? 0.06
+              : 0.16;
+    const targetIntensity = clamp(
+      base +
+        0.2 * danger +
+        0.16 * this.threat +
+        0.12 * clamp(this.flight.gLoad / 7, 0, 1) +
+        0.07 * clamp((this.flight.speed - 150) / 180, 0, 1) +
+        0.12 * (1 - clamp(this.flight.hp / this.flight.maxHp, 0, 1)) +
+        (this.activeManeuver() ? 0.06 : 0) +
+        (this.comboHits.length > 3 ? 0.06 : 0),
+      0,
+      1,
+    );
+    this.intensity = damp(this.intensity, targetIntensity, 1.1, dt);
+  }
+
+  /**
+   * Background battle. The sky behind the duel keeps producing flak whether or
+   * not the player is looking at it, which is what turns a flat sunset into a
+   * war zone.
+   */
+  private updateAmbience(dt: number): void {
+    const interval = AMBIENCE_INTERVAL[this.phase];
+    if (!interval) {
+      this.ambience = [];
+      return;
+    }
+    for (const strike of this.ambience) {
+      if (this.elapsed < strike.at) continue;
+      this.spawnEffect('flak', strike.position, {
+        scale: strike.scale,
+        color: 'white',
+        life: randomRange(1.1, 1.7),
+        velocity: vec3(randomRange(-4, 4), randomRange(2, 7), randomRange(-4, 4)),
+      });
+    }
+    this.ambience = this.ambience.filter((strike) => this.elapsed < strike.at);
+
+    this.ambienceTimer -= dt;
+    if (this.ambienceTimer > 0) return;
+    this.ambienceTimer = randomRange(interval[0], interval[1]);
+    const forward = forwardFromAngles(this.flight.yaw, this.flight.pitch);
+    const right = rightFromYaw(this.flight.yaw);
+    const bursts = this.phase === 'boss' ? 2 : 1;
+    for (let index = 0; index < bursts; index += 1) {
+      const ahead = randomRange(2600, 8600);
+      const lateral = randomRange(-5200, 5200);
+      const vertical = randomRange(-900, 2400);
+      this.ambience.push({
+        at: this.elapsed + randomRange(0.35, 1.5),
+        position: add(
+          this.flight.position,
+          add(scale(forward, ahead), add(scale(right, lateral), vec3(0, vertical, 0))),
+        ),
+        scale: randomRange(16, 34),
+      });
+    }
+    // Tracer streams crossing the far sky. They never hit anything; they exist
+    // so the horizon reads as a battle line rather than empty air.
+    const streams = this.phase === 'boss' ? 7 : 4;
+    for (let index = 0; index < streams; index += 1) {
+      const origin = add(
+        this.flight.position,
+        add(
+          scale(forward, randomRange(1800, 7200)),
+          add(
+            scale(right, randomRange(-6000, 6000)),
+            vec3(0, randomRange(-600, 2600), 0),
+          ),
+        ),
+      );
+      const heading = normalize(
+        vec3(randomRange(-1, 1), randomRange(-0.15, 0.35), randomRange(-1, 1)),
+      );
+      this.spawnEffect('tracer', origin, {
+        to: add(origin, scale(heading, randomRange(700, 1600))),
+        scale: 1,
+        color: Math.random() < 0.3 ? 'red' : 'amber',
+        life: randomRange(0.5, 0.95),
+      });
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1851,31 +2198,91 @@ export class CockpitEngine {
   /* ------------------------------------------------------------------ */
 
   private spawnEffect(
-    kind: SimEffect['kind'],
+    kind: EffectKind,
     position: Vec3,
     options: {
       scale?: number;
-      color?: SimEffect['color'];
+      color?: EffectColor;
       life?: number;
       to?: Vec3;
+      velocity?: Vec3;
+      gravity?: number;
+      spin?: number;
     } = {},
   ): void {
     this.idCounter += 1;
+    const life = options.life ?? 0.6;
     this.effects.push({
       id: `fx-${this.idCounter}`,
       kind,
-      position,
-      to: options.to ?? null,
+      position: { ...position },
+      to: options.to ? { ...options.to } : null,
       scale: options.scale ?? 1,
       color: options.color ?? 'amber',
-      life: options.life ?? 0.6,
-      maxLife: options.life ?? 0.6,
+      life,
+      maxLife: life,
+      velocity: options.velocity ?? null,
+      gravity: options.gravity ?? 0,
+      spin: options.spin ?? 0,
+      seed: Math.random(),
     });
-    if (this.effects.length > 110) this.effects.splice(0, this.effects.length - 110);
+    this.trimEffects();
+  }
+
+  /**
+   * Keep the live effect count inside the frame budget by dropping the least
+   * important effects first: a stray spark matters less than a kill explosion.
+   */
+  private trimEffects(): void {
+    if (this.effects.length <= EFFECT_BUDGET) return;
+    const overflow = this.effects.length - EFFECT_BUDGET;
+    const ranked = this.effects
+      .map((effect, index) => ({ index, priority: EFFECT_PRIORITY[effect.kind] ?? 5 }))
+      .sort((a, b) => a.priority - b.priority || a.index - b.index);
+    const drop = new Set(ranked.slice(0, overflow).map((entry) => entry.index));
+    this.effects = this.effects.filter((_, index) => !drop.has(index));
+  }
+
+  /** Bright metallic spray where a round lands — the core of the gun feel. */
+  private spawnSparks(point: Vec3, color: EffectColor, count: number, power = 1): void {
+    for (let index = 0; index < count; index += 1) {
+      const direction = normalize(
+        vec3(randomRange(-1, 1), randomRange(-0.6, 1), randomRange(-1, 1)),
+      );
+      this.spawnEffect('spark', point, {
+        scale: randomRange(1.5, 3.2) * power,
+        color,
+        life: randomRange(0.14, 0.32),
+        velocity: scale(direction, randomRange(26, 78) * power),
+        gravity: 22,
+      });
+    }
+  }
+
+  /** Burning wreckage that tumbles away from a kill. */
+  private spawnDebris(point: Vec3, count: number, power: number): void {
+    for (let index = 0; index < count; index += 1) {
+      const direction = normalize(
+        vec3(randomRange(-1, 1), randomRange(-0.35, 1), randomRange(-1, 1)),
+      );
+      this.spawnEffect('debris', point, {
+        scale: randomRange(2.4, 5.6) * power,
+        color: Math.random() < 0.34 ? 'amber' : 'red',
+        life: randomRange(0.9, 2.1),
+        velocity: scale(direction, randomRange(18, 58) * power),
+        gravity: 34,
+        spin: randomRange(-7, 7),
+      });
+    }
   }
 
   private updateEffectsLifetime(dt: number): void {
-    for (const effect of this.effects) effect.life -= dt;
+    for (const effect of this.effects) {
+      effect.life -= dt;
+      if (!effect.velocity) continue;
+      if (effect.gravity !== 0) effect.velocity.y -= effect.gravity * dt;
+      effect.position = add(effect.position, scale(effect.velocity, dt));
+    }
     this.effects = this.effects.filter((effect) => effect.life > 0);
     for (const entity of this.entities) {
       if (entity.kind === 'flare') {
@@ -2320,6 +2727,7 @@ export class CockpitEngine {
         this.tutorialDismissed,
         this.phase === 'dogfight' || this.phase === 'boss-intro' || this.phase === 'boss',
       ),
+      combat: this.buildCombatFeedback(),
       mission: {
         kills: this.kills,
         requiredKills: this.scenario.requiredKills,
@@ -2353,7 +2761,11 @@ export class CockpitEngine {
       gLoad: this.flight.gLoad,
       hpRatio: this.flight.hp / this.flight.maxHp,
       lockState: this.getLockState().state,
+      lockProgress: this.lockProgress,
       missileWarning,
+      intensity: this.intensity,
+      combo: this.comboHits.length,
+      threat: this.threat,
       bossActive: Boolean(this.bossId) && !this.bossDefeated,
       elapsed: this.elapsed,
       maneuver: this.activeManeuver(),
@@ -2368,6 +2780,35 @@ export class CockpitEngine {
 
   getEffects(): readonly SimEffect[] {
     return this.effects;
+  }
+
+  /**
+   * v0.3 combat feedback block. Everything here carries an `age` instead of an
+   * absolute clock so the HUD can animate it without knowing the mission timer,
+   * and so a paused game freezes the animation.
+   */
+  private buildCombatFeedback(): CombatFeedback {
+    return {
+      hit: this.hitMarker ? { ...this.hitMarker } : null,
+      incoming: this.incoming.map((hit) => ({ ...hit })),
+      kills: this.killFeed.map((entry) => ({ ...entry })),
+      intensity: this.intensity,
+      threat: this.threat,
+      combo: this.comboHits.length,
+    };
+  }
+
+  /** Read the live combat atmosphere numbers without taking a full snapshot. */
+  getCombatFeedback(): CombatFeedback {
+    return this.buildCombatFeedback();
+  }
+
+  /**
+   * Just the atmosphere scalar. The renderer reads this every frame, so it must
+   * not allocate the way `getCombatFeedback` does.
+   */
+  getIntensity(): number {
+    return this.intensity;
   }
 
   getFlight(): Readonly<typeof this.flight> {

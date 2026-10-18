@@ -3659,3 +3659,353 @@
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* v0.3 impact feedback                                                */
+/*                                                                     */
+/* The simulation stamps every hit with an age; these rules only turn  */
+/* that age into scale and opacity, so a pause freezes the feedback    */
+/* exactly where it was.                                               */
+/* ------------------------------------------------------------------ */
+
+.tv-hud__incoming {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+}
+
+/*
+ * The marker has to survive being drawn on top of a bright orange cloud deck,
+ * so the ticks are ice-white with a coloured halo rather than coloured solid.
+ */
+.tv-hitconfirm {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 132px;
+  height: 132px;
+  transform: translate(-50%, -50%) scale(var(--tv-hit-scale, 1));
+  opacity: var(--tv-hit-opacity, 1);
+  color: var(--tv-amber);
+  z-index: 6;
+  pointer-events: none;
+}
+
+.tv-hitconfirm__ticks {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.tv-hitconfirm__tick {
+  position: absolute;
+  width: 30px;
+  height: 3px;
+  background: var(--tv-ice);
+  box-shadow:
+    0 0 0 1px rgba(2, 6, 10, 0.85),
+    0 0 14px currentColor,
+    0 0 5px currentColor;
+}
+
+.tv-hitconfirm__tick--tl {
+  top: 12px;
+  left: 8px;
+  transform: rotate(45deg);
+}
+
+.tv-hitconfirm__tick--tr {
+  top: 12px;
+  right: 8px;
+  transform: rotate(-45deg);
+}
+
+.tv-hitconfirm__tick--bl {
+  bottom: 12px;
+  left: 8px;
+  transform: rotate(-45deg);
+}
+
+.tv-hitconfirm__tick--br {
+  bottom: 12px;
+  right: 8px;
+  transform: rotate(45deg);
+}
+
+.tv-hitconfirm__ring {
+  position: absolute;
+  inset: 18px;
+  border: 3px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.7;
+  box-shadow:
+    0 0 22px currentColor,
+    inset 0 0 14px currentColor;
+}
+
+.tv-hitconfirm__damage,
+.tv-hitconfirm__combo {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--tv-ice);
+  text-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.9),
+    0 0 12px currentColor;
+}
+
+.tv-hitconfirm__damage {
+  bottom: -20px;
+  font-size: 15px;
+}
+
+.tv-hitconfirm__combo {
+  top: -22px;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+}
+
+/* A weakpoint impact is ice-cold; the killing blow goes hot and grows a ring. */
+.tv-hitconfirm.is-weakpoint {
+  color: var(--tv-cyan);
+}
+
+.tv-hitconfirm.is-kill {
+  color: var(--tv-red);
+}
+
+.tv-hitconfirm.is-kill .tv-hitconfirm__tick {
+  width: 38px;
+  height: 4px;
+}
+
+.tv-hitconfirm.is-kill .tv-hitconfirm__damage {
+  font-size: 18px;
+}
+
+.tv-incoming__wedge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 224px;
+  height: 224px;
+  margin: -112px 0 0 -112px;
+  display: block;
+  color: var(--tv-amber);
+  opacity: var(--tv-incoming-opacity, 1);
+  transform: rotate(var(--tv-bearing, 0deg)) scale(var(--tv-incoming-spread, 1));
+}
+
+/* A 30° arc on a thin ring, centred on 0deg (dead ahead) before the rotation. */
+.tv-incoming__wedge::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(from -15deg, currentColor 0deg 30deg, transparent 30deg 360deg);
+  -webkit-mask: radial-gradient(
+    circle at 50% 50%,
+    transparent 0 84px,
+    #000 86px 95px,
+    transparent 97px
+  );
+  mask: radial-gradient(
+    circle at 50% 50%,
+    transparent 0 84px,
+    #000 86px 95px,
+    transparent 97px
+  );
+}
+
+/* Direction is not carried by colour alone: the arc also has an arrowhead. */
+.tv-incoming__wedge::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 36px;
+  transform: translateX(-50%);
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 11px solid currentColor;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.tv-incoming__wedge--caution {
+  color: var(--tv-amber);
+}
+
+.tv-incoming__wedge--warning {
+  color: var(--tv-red);
+}
+
+.tv-incoming__wedge--critical {
+  color: #ff2f3f;
+}
+
+.tv-incoming__wedge--critical::before {
+  background: conic-gradient(from -19deg, currentColor 0deg 38deg, transparent 38deg 360deg);
+}
+
+.tv-hud__kills {
+  position: absolute;
+  left: 50%;
+  top: 57%;
+  width: min(430px, 46vw);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.tv-kills {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.tv-kills__row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin: 0;
+  padding: 3px 14px 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(4, 12, 18, 0) 0%,
+    rgba(6, 18, 26, 0.84) 14%,
+    rgba(6, 18, 26, 0.84) 86%,
+    rgba(4, 12, 18, 0) 100%
+  );
+  opacity: var(--tv-kill-opacity, 1);
+  transform: translateY(var(--tv-kill-shift, 0));
+  text-shadow: var(--tv-text-shadow-hard);
+  white-space: nowrap;
+}
+
+.tv-kills__tag {
+  padding: 1px 5px 0;
+  color: var(--tv-void);
+  background: var(--tv-amber);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.tv-kills__name {
+  color: var(--tv-ice);
+  font-family: var(--tv-font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.tv-kills__meta {
+  color: rgba(134, 163, 174, 0.7);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tv-kills__points {
+  color: var(--tv-amber);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.tv-kills__row.is-ace .tv-kills__tag {
+  background: var(--tv-red);
+  color: var(--tv-ice);
+}
+
+.tv-kills__row.is-ace .tv-kills__name {
+  color: var(--tv-red);
+}
+
+.tv-kills__row.is-weakpoint .tv-kills__tag {
+  background: var(--tv-cyan);
+}
+
+.tv-kills__row.is-weakpoint .tv-kills__name {
+  color: var(--tv-cyan);
+}
+
+/*
+ * Battle grade. The 3D layer already cools and darkens with intensity; this is
+ * the cockpit's share of the same cue, so the frame reads "hot" without any
+ * extra markup.
+ */
+.tv-hud--intense .tv-damage__scan {
+  opacity: 0.34;
+  animation: tv-damage-scan 3.4s steps(2, jump-none) infinite;
+}
+
+.tv-hud--intense .tv-hud__footer {
+  color: rgba(255, 181, 71, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv-hitconfirm {
+    transform: translate(-50%, -50%);
+  }
+
+  .tv-incoming__wedge {
+    transform: rotate(var(--tv-bearing, 0deg));
+  }
+}
+
+@media (max-width: 1240px) {
+  .tv-hitconfirm {
+    width: 104px;
+    height: 104px;
+  }
+
+  .tv-hitconfirm__tick {
+    width: 23px;
+  }
+
+  .tv-hitconfirm.is-kill .tv-hitconfirm__tick {
+    width: 29px;
+  }
+
+  .tv-incoming__wedge {
+    width: 184px;
+    height: 184px;
+    margin: -92px 0 0 -92px;
+  }
+
+  .tv-incoming__wedge::before {
+    -webkit-mask: radial-gradient(
+      circle at 50% 50%,
+      transparent 0 66px,
+      #000 68px 76px,
+      transparent 78px
+    );
+    mask: radial-gradient(
+      circle at 50% 50%,
+      transparent 0 66px,
+      #000 68px 76px,
+      transparent 78px
+    );
+  }
+
+  .tv-incoming__wedge::after {
+    top: 32px;
+  }
+}
+
+@media (max-height: 460px) {
+  .tv-hud__kills {
+    top: 50%;
+    width: min(320px, 52vw);
+  }
+
+  .tv-kills__meta {
+    display: none;
+  }
+}

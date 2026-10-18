@@ -108,6 +108,19 @@ export function angleBetween(a: Vec3, b: Vec3): number {
   return Math.acos(clamp(dot(a, b) / denominator, -1, 1));
 }
 
+/**
+ * Bearing of a world point relative to the aircraft nose, in degrees clockwise
+ * from dead ahead. Used by the v0.3 damage indicator and the audio panner.
+ */
+export function bearingDegrees(yaw: number, from: Vec3, to: Vec3): number {
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  if (Math.abs(dx) < 1e-6 && Math.abs(dz) < 1e-6) return 0;
+  const forward = -dx * Math.sin(yaw) - dz * Math.cos(yaw);
+  const right = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+  return (Math.atan2(right, forward) * RAD + 360) % 360;
+}
+
 export function headingFromYaw(yaw: number): number {
   return wrapDegrees(-yaw * RAD);
 }

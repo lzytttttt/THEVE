@@ -91,6 +91,8 @@ export interface MissileState {
   life: number;
   maxLife: number;
   owner: Team;
+  /** True once the missile has already played its close-pass whoosh. */
+  whooshed: boolean;
 }
 
 export interface WeakpointState {
@@ -123,7 +125,23 @@ export interface SimEntity {
   maxLife: number;
 }
 
-export type EffectKind = 'explosion' | 'shockwave' | 'tracer' | 'muzzle';
+/**
+ * v0.3 splits the old three-effect vocabulary into readable impact language:
+ * `spark` and `debris` sell a gun hit, `shield` says "wrong target", `flak`
+ * builds the battlefield behind the fight and `smoke` trails a wounded airframe.
+ */
+export type EffectKind =
+  | 'explosion'
+  | 'shockwave'
+  | 'tracer'
+  | 'muzzle'
+  | 'spark'
+  | 'debris'
+  | 'smoke'
+  | 'shield'
+  | 'flak'
+  | 'flash';
+
 export type EffectColor = 'cyan' | 'amber' | 'red' | 'white' | 'green';
 
 export interface SimEffect {
@@ -135,6 +153,14 @@ export interface SimEffect {
   color: EffectColor;
   life: number;
   maxLife: number;
+  /** m/s for effects that travel — sparks, debris, smoke. */
+  velocity: Vec3 | null;
+  /** Gravity in m/s²; 0 for purely additive glows. */
+  gravity: number;
+  /** Radians per second of tumble, used by debris. */
+  spin: number;
+  /** Stable 0..1 jitter so a renderer can vary an effect without extra fields. */
+  seed: number;
 }
 
 export interface ScenarioEnemy {
@@ -337,6 +363,58 @@ export interface TutorialState {
   steps: TutorialStep[];
 }
 
+/** Transient "you connected" marker. `age` is seconds since the hit landed. */
+export interface HitMarker {
+  id: number;
+  age: number;
+  /** Seconds the marker should stay up, so the HUD can fade it correctly. */
+  duration: number;
+  damage: number;
+  /** The hit destroyed the target. */
+  kill: boolean;
+  /** Weakpoint damage gets the heavier bracket. */
+  kind: TargetKind;
+}
+
+/** Damage the player took, with the bearing it arrived from. */
+export interface IncomingHit {
+  id: number;
+  age: number;
+  duration: number;
+  amount: number;
+  /** Degrees clockwise from the nose: 0 ahead, 90 right, 180 behind. */
+  bearing: number;
+  severity: 'caution' | 'warning' | 'critical';
+}
+
+/** One line of the kill ticker. */
+export interface KillFeedEntry {
+  id: number;
+  age: number;
+  duration: number;
+  callsign: string;
+  label: string;
+  points: number;
+  ace: boolean;
+  weakpoint: boolean;
+}
+
+/**
+ * Everything the HUD needs to make a hit feel like a hit. Produced by the
+ * simulation so the DOM layer stays a pure function of the snapshot.
+ */
+export interface CombatFeedback {
+  hit: HitMarker | null;
+  incoming: IncomingHit[];
+  kills: KillFeedEntry[];
+  /** 0..1 smoothed battle intensity, shared with the score and the visual grade. */
+  intensity: number;
+  /** 0..1 proximity of the nearest hostile — drives the music and the ambience. */
+  threat: number;
+  /** Rolling count of player hits in the last two seconds, for the combo readout. */
+  combo: number;
+}
+
 export interface CockpitSnapshot {
   phase: MissionPhase;
   paused: boolean;
@@ -388,6 +466,7 @@ export interface CockpitSnapshot {
   maneuver: ManeuverSnapshot;
   assist: AssistSnapshot;
   tutorial: TutorialState;
+  combat: CombatFeedback;
   mission: {
     kills: number;
     requiredKills: number;
@@ -406,11 +485,24 @@ export type SimEvent =
   | { type: 'lock-lost' }
   | { type: 'missile-fire'; team: Team; id: string }
   | { type: 'gun-fire'; team: Team }
-  | { type: 'hit'; targetId: string; damage: number; mine: boolean }
-  | { type: 'explosion'; position: Vec3; scale: number }
+  | {
+      type: 'hit';
+      targetId: string;
+      damage: number;
+      mine: boolean;
+      /** Which weapon connected — the audio layer voices them differently. */
+      weapon: 'gun' | 'missile';
+      kind: TargetKind;
+      /** The shot destroyed the target. */
+      kill: boolean;
+    }
+  | { type: 'shield-deflect'; key: WeakpointKey }
+  | { type: 'kill'; targetId: string; callsign: string; label: string; points: number; ace: boolean }
+  | { type: 'flyby'; team: Team; distance: number }
+  | { type: 'explosion'; position: Vec3; scale: number; distance: number }
   | { type: 'flare' }
   | { type: 'warning'; warning: WarningState }
-  | { type: 'damage'; amount: number }
+  | { type: 'damage'; amount: number; bearing: number }
   | { type: 'radio'; message: CommsMessage }
   | { type: 'boss-intro' }
   | { type: 'boss-shield-down'; key: WeakpointKey }
@@ -446,10 +538,18 @@ export interface AudioTelemetry {
   gLoad: number;
   hpRatio: number;
   lockState: LockState['state'];
+  /** 0..1 progress of the current lock — the tone rises with it. */
+  lockProgress: number;
   missileWarning: boolean;
   bossActive: boolean;
   elapsed: number;
   maneuver: ManeuverId | null;
   airbrake: boolean;
   assistEngaged: number;
+  /** 0..1 proximity and threat of the nearest hostile. */
+  threat: number;
+  /** 0..1 smoothed battle intensity — drives the score's section choice. */
+  intensity: number;
+  /** Rolling player hits in the last two seconds. */
+  combo: number;
 }

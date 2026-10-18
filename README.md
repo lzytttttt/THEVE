@@ -8,7 +8,7 @@
 
 THEVE // TACS-8 把电影化空战的第一人称座舱拆解成一套 React + TypeScript 组件库：
 近黑金属、切角与磷光刻度构成的 HUD，three.js 绘制的黄昏平流层与战争巨兽，
-以及全部由 WebAudio 实时合成的主题音效。Showcase 里你可以真正坐进 LUMEN 1 的座舱，
+以及全部由 WebAudio 实时合成的配乐、音效与打击反馈。Showcase 里你可以真正坐进 LUMEN 1 的座舱，
 锁定 VESPER 编队，穿过弹幕，把 LEVIATHAN 的护盾节点逐个摘下来。
 
 所有美术、机体、巨兽、文案与声音都是原创 / 程序化生成；本项目不使用任何官方素材。
@@ -126,16 +126,26 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 
 **three.js 座舱：** 固定在相机上的座舱框与切角玻璃、程序化天空 shader、FBM 云海、
 近场云团、低多边形敌机 / 僚机、可旋转雷达的空中无畏舰、对象池化爆炸与曳光弹。
-3D 在独立 rAF 中运行，不经过 React；模拟以 60Hz 推进，只以 30Hz 向 React 发布快照。
+v0.3 起战场本身也在演戏：远景弹幕与曳光弹持续扫过地平线，受创机拖着烟迹，
+爆炸会用一盏池化点光源真的照亮云层。3D 在独立 rAF 中运行，不经过 React；
+模拟以 60Hz 推进，只以 30Hz 向 React 发布快照。
 
 **飞行模型（v0.2 手感重做）：** 操纵面权限随动压（速度）缩放，滚转用角加速度 + 阻尼产生机翼惯量，
 俯仰走一阶滞后指令，转弯由坡度升力自动协调并叠加滚转协调舵；爬升掉速、俯冲增速，
 拉杆与滚转产生诱导阻力，过载由俯仰角速度与速度实时积分。失速地板 150 m/s，
 高速上限 330 m/s（加力 0.88 油门以上）。
 
-**WebAudio：** 全部程序化。双锯齿引擎 + 风噪随油门/速度变化，锁定单音、RWR、发射、
-爆炸、热焰弹、电台静噪与 D 小调生成式配乐。首次 `LAUNCH` 用户手势才创建 AudioContext；
-静音、画质与俯仰设置会持久化。无版权音频文件。
+**打击感（v0.3）：** 命中会有四道冰白刻线在准星上炸开并附上伤害数字，击坠时整圈点亮；
+机炮每发都有炮口闪光与金属火花，护盾节点会把炮弹弹开成冷色涟漪；
+挨打时 HUD 外圈出现指向来袭方向的扇区，镜头按方位被顶一下。
+所有反馈都是 `age` 的纯函数——暂停时它们就停在原地，掉帧也不会和那一枪错位。
+
+**WebAudio：** 全部程序化，没有音频文件。v0.3 把配乐换成一台真正的编曲机：
+D 小调、六个段落（翱翔 / 制空 / 强攻 / 巨兽 / 凯旋 / 挽歌）、十条写好的旋律、
+太鼓与弦乐固定音型、程序化生成的厅堂混响，只在小节线上换段。
+音效层同样重做：机炮分瞬态 / 音体 / 机械三层，命中是金属短鸣，
+爆炸按距离延迟并按真实声速衰减高频，导弹掠过时播放多普勒呼啸。
+首次 `LAUNCH` 用户手势才创建 AudioContext；静音、画质与俯仰设置会持久化。
 
 更多设计决策与迭代记录见 [`docs/DESIGN.md`](docs/DESIGN.md)。
 
@@ -183,8 +193,10 @@ HUD 组件均可单独复用；组合版 `CockpitHud` 只是本项目 Showcase �
 - **基础**：`TheveRoot` `Panel` `Button` `IconButton` `Tag` `Readout` `Meter` `Keycap` `Toggle` `StatusLamp` `Divider` `HazardStripe`
 - **HUD**：`CockpitHud` `HeadingTape` `PitchLadder` `FlightPathMarker` `SpeedTape` `AltitudeTape` `TargetMarker` `LockReticle` `MissileWarning` `RadarScope` `WeaponRack` `CommsFeed` `WingmanStatus` `BossBar` `ObjectiveTracker` `ScoreTicker` `DamageOverlay`
 - **操纵与辅助（v0.2）**：`ManeuverRail` `ManeuverBanner` `AssistRail` `FlightAidStrip` `LockSteeringCue` `StartupChecklist` `GLoadMeter`
+- **打击反馈（v0.3）**：`HitConfirm` `DamageDirection` `KillTicker` `CombatFeedbackLayer`
 - **操作**：`CockpitControls`，内部组合油门、武器、机动、辅助、FIRE、热焰弹与目标切换
 - **模拟**：`CockpitEngine`、`MANEUVERS`、`ASSISTS`、`TUTORIAL_STEPS`、`useCockpit`、`useCockpitActions`、`useCockpitEngine`、`useCockpitSettings`、`useAudio`、`useCockpitControls`
+- **配乐（v0.3）**：`SCORE_SECTIONS` `SECTION_ORDER` `PHRASES` `selectSection` `phraseForBar` `chordForBar` `degreeToMidi` `midiToFreq`
 - **3D**：`CockpitViewport`、`CockpitScene`（`getDebugInfo()` 供自动化测试）
 - **音频**：`AudioEngine`（可在 Provider 外独立使用）
 
@@ -192,12 +204,13 @@ HUD 组件均可单独复用；组合版 `CockpitHud` 只是本项目 Showcase �
 
 | 产物 | raw | gzip |
 | --- | --- | --- |
-| 核心入口 `dist/index.js` | 59.6 KB | 13.6 KB |
-| three 入口 `dist/three.js` | 38.5 KB | 10.6 KB |
-| 模拟/音频共享块 | 96.5 KB | 27.2 KB |
-| 样式 `dist/theve.css` | 69.9 KB | 14.2 KB |
+| 核心入口 `dist/index.js` | 63.7 KB | 14.6 KB |
+| three 入口 `dist/three.js` | 45.1 KB | 12.3 KB |
+| 模拟/音频共享块 | 129.3 KB | 35.4 KB |
+| 样式 `dist/theve.css` | 74.5 KB | 15.0 KB |
 
-Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 包单独加载。
+Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 包单独加载，
+配乐数据表单独成块（`score-*.js`），不进首屏。
 
 ---
 
@@ -207,7 +220,10 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 - 仪表使用 `role="meter"` 与 `aria-valuetext`；告警使用限流的 `role="alert"`；通讯使用 `aria-live="polite"`。
 - 敌我、锁定与告警不只依赖颜色：同时使用形状、图标、文字与方向箭头。
 - 七种机动、四项辅助与检查单均为真实 `<button>`，带中文 `aria-label` 与键盘 `aria-pressed` 状态。
-- 支持 `prefers-reduced-motion`：关闭镜头抖动、扫描线、机动横幅与检查单的切入动画。
+- 打击反馈同样不只靠颜色：受击扇区带箭头、命中刻线带伤害数字、击坠记录带文字标签。
+  机炮一秒能命中十几次，所以命中标记**不**朗读，只有击坠用 `role="log"` 播报。
+- 支持 `prefers-reduced-motion`：关闭镜头抖动、镜头冲击、扫描线、机动横幅与检查单的切入动画，
+  命中标记也退化为不缩放的静态刻线。
 - 静音后，导弹告警、通讯与任务结果都有视觉替代。
 - 竖屏提示可继续进入精简模式；横屏手机有专门的短屏 HUD 布局。
 
@@ -218,7 +234,8 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 | 版本 | 主题 | 内容 |
 | --- | --- | --- |
 | 0.1 | 座舱与世界观 | 设计令牌、HUD 组件、three.js 座舱、程序化音频、SUNSET SPEAR 任务 |
-| **0.2** | **战机操作** | **七种战斗机机动、四项辅助驾驶、进入任务后的简要操作说明、飞行手感重做** |
+| 0.2 | 战机操作 | 七种战斗机机动、四项辅助驾驶、进入任务后的简要操作说明、飞行手感重做 |
+| **0.3** | **音效与打击感** | **编曲式生成配乐（六段落 / 十条旋律）、战斗音效分层重做、命中与受击反馈、战场氛围层** |
 
 ---
 
@@ -242,14 +259,14 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 
 | | |
 | --- | --- |
-| ![Dogfight](docs/screenshots/03-dogfight-1920.png) | ![High-G](docs/screenshots/03b-highg-turn-1920.png) |
-| 制空：锁定 VESPER，检查单与辅助状态条 | 高G转弯：机动面板与 G 表 |
-| ![Cobra](docs/screenshots/03c-cobra-1920.png) | ![Boss](docs/screenshots/04-boss-1920.png) |
-| 眼镜蛇机动：过 90° 上仰与 POST STALL | 战争巨兽 LEVIATHAN 与护盾节点 |
-| ![Briefing](docs/screenshots/01-briefing-1920.png) | ![Debrief](docs/screenshots/07-debrief-1920.png) |
-| 任务简报 | 任务结算 / S 评级 |
+| ![Dogfight](docs/screenshots/03-dogfight-1920.png) | ![Hit confirm](docs/screenshots/14-hit-confirm-1920.png) |
+| 制空：锁定 VESPER，检查单与辅助状态条 | v0.3 命中确认：准星上的刻线、伤害数字与连击计数 |
+| ![Splash](docs/screenshots/15-splash-1920.png) | ![Damage bearing](docs/screenshots/16-damage-bearing-1920.png) |
+| v0.3 击坠：爆炸、碎片与 SPLASH 记录 | v0.3 受击方位：指向来袭方向的扇区与告警 |
+| ![Boss](docs/screenshots/04-boss-1920.png) | ![Debrief](docs/screenshots/07-debrief-1920.png) |
+| 战争巨兽 LEVIATHAN 与护盾节点 | 任务结算 / S 评级 |
 
-完整截图集（开场、启动、制空、高G转弯、眼镜蛇、巨兽、暂停、手册、Boss 登场、任务失败、系统图鉴、1366 / 390 / 横屏）在
+完整截图集（开场、启动、制空、命中确认、击坠、受击方位、高G转弯、眼镜蛇、巨兽、暂停、手册、Boss 登场、任务失败、系统图鉴、1366 / 390 / 横屏）在
 [`docs/screenshots/`](docs/screenshots/)。
 
 ---

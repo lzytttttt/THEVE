@@ -2,6 +2,7 @@ import { useCockpit, useCockpitActions } from '../sim/CockpitProvider';
 import { cx } from '../primitives';
 import { AltitudeTape, FlightPathMarker, HeadingTape, PitchLadder, SpeedTape } from './instruments';
 import { DamageOverlay, LockReticle, MissileWarning, TargetMarker } from './targets';
+import { DamageDirection, HitConfirm, KillTicker } from './combat';
 import {
   BossBar,
   CommsFeed,
@@ -26,6 +27,8 @@ export interface CockpitHudProps {
   /** The v0.2 first-flight checklist. On by default. */
   showChecklist?: boolean;
   showAidStrip?: boolean;
+  /** The v0.3 hit marker, damage bearings and kill ticker. On by default. */
+  showCombatFeedback?: boolean;
 }
 
 /**
@@ -38,6 +41,7 @@ export function CockpitHud({
   showWeaponRack = true,
   showChecklist = true,
   showAidStrip = true,
+  showCombatFeedback = true,
 }: CockpitHudProps) {
   const snapshot = useCockpit();
   const actions = useCockpitActions();
@@ -52,6 +56,7 @@ export function CockpitHud({
     wingman,
     boss,
     mission,
+    combat,
     phase,
   } = snapshot;
 
@@ -61,7 +66,20 @@ export function CockpitHud({
   );
 
   return (
-    <div className={cx('tv-hud', `tv-hud--${phase}`, className)}>
+    <div
+      className={cx(
+        'tv-hud',
+        `tv-hud--${phase}`,
+        combat.intensity > 0.68 && 'tv-hud--intense',
+        className,
+      )}
+    >
+      {showCombatFeedback && (
+        <>
+          <DamageDirection hits={combat.incoming} className="tv-hud__incoming" />
+          <KillTicker entries={combat.kills} className="tv-hud__kills" />
+        </>
+      )}
       <div className="tv-hud__heading">
         <HeadingTape heading={flight.heading} />
         <div className="tv-hud__heading-meta tv-mono">
@@ -101,6 +119,9 @@ export function CockpitHud({
         ))}
         <LockReticle target={selected} />
         <LockSteeringCue />
+        {showCombatFeedback && (
+          <HitConfirm key={combat.hit?.id ?? 'idle'} hit={combat.hit} combo={combat.combo} />
+        )}
       </div>
 
       {showAidStrip && (

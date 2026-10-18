@@ -25,3 +25,19 @@ export type {
 export { useCockpitControls } from './sim/useCockpitControls';
 export type { CockpitControlOptions } from './sim/useCockpitControls';
 export { AudioEngine } from './audio/AudioEngine';
+export {
+  barSeconds,
+  CHORD_VOICINGS,
+  chordForBar,
+  chordNameForBar,
+  degreeToMidi,
+  midiToFreq,
+  PHRASES,
+  phraseForBar,
+  phraseNoteToMidi,
+  SCORE_SECTIONS,
+  SECTION_ORDER,
+  selectSection,
+  TONIC,
+} from './audio/score';
+export type { Phrase, PhraseNote, ScoreSection, SectionId } from './audio/score';

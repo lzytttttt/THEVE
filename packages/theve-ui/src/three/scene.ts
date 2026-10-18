@@ -25,10 +25,55 @@ const EFFECT_COLORS: Record<EffectColor, number> = {
   green: 0x74ffb0,
 };
 
+/* --- v0.3 impact & atmosphere --------------------------------------- */
+/** Explosions past this range are decoration, not events. */
+const FLASH_POOL = 3;
+/** Camera impulse spring: stiffness and damping of the jolt. */
+const IMPULSE_STIFFNESS = 52;
+const IMPULSE_DAMPING = 10.5;
+/** A hull below this fraction of health starts trailing smoke. */
+const SMOKE_HULL = 0.55;
+const SMOKE_INTERVAL = 0.075;
+/** Effect kinds drawn with normal blending instead of additive glow. */
+const MATTE_EFFECTS = new Set(['smoke', 'flak']);
+
+/** Base world size multiplier per effect kind. */
+const EFFECT_SCALE: Record<SimEffect['kind'], number> = {
+  explosion: 2.4,
+  shockwave: 4.2,
+  tracer: 1,
+  muzzle: 1.8,
+  spark: 1.5,
+  debris: 1.2,
+  smoke: 3.4,
+  shield: 0.5,
+  flak: 5.6,
+  flash: 6.5,
+};
+
+/** How much each kind grows over its lifetime. Sparks shrink, smoke billows. */
+const EFFECT_EXPANSION: Record<SimEffect['kind'], number> = {
+  explosion: 0.75,
+  shockwave: 2.4,
+  tracer: 0,
+  muzzle: 0.6,
+  spark: -0.35,
+  debris: 0.1,
+  smoke: 2.2,
+  shield: 2.6,
+  flak: 3.2,
+  flash: 1.1,
+};
+
 function disposeObject(root: THREE.Object3D): void {
   root.traverse((object) => {
-    const mesh = object as THREE.Mesh;
-    if (mesh.geometry) mesh.geometry.dispose();
+    // three.js gives every Sprite the same module-level plane geometry, so
+    // disposing it here would make the renderer re-upload it for all sprites in
+    // the scene. Only materials are ours to release.
+    if (!(object instanceof THREE.Sprite)) {
+      const mesh = object as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+    }
     const material = (object as THREE.Mesh).material;
     if (Array.isArray(material)) {
       for (const item of material) item.dispose();
@@ -74,6 +119,21 @@ export class CockpitScene {
   private sunLight: THREE.DirectionalLight;
   private glowTexture: THREE.Texture;
   private cloudTexture: THREE.Texture;
+  private smokeTexture: THREE.Texture;
+
+  /* --- v0.3 impact & atmosphere -------------------------------------- */
+  private readonly flashLights: THREE.PointLight[] = [];
+  private readonly flashTimers: number[] = [];
+  private flashCursor = 0;
+  private readonly smokeTrails: THREE.Sprite[] = [];
+  private smokeCursor = 0;
+  private smokeClock = 0;
+  /** Rotational jolt: x = pitch, y = yaw, z = roll, in radians. */
+  private readonly impulse = new THREE.Vector3();
+  private readonly impulseVelocity = new THREE.Vector3();
+  private hemisphere: THREE.HemisphereLight | null = null;
+  private fogBase = 0x35404e;
+  private exposure = 1.08;
 
   private frame = 0;
   private disposed = false;
@@ -123,7 +183,8 @@ export class CockpitScene {
 
     this.glowTexture = this.createGlowTexture();
     this.cloudTexture = this.createCloudTexture();
-    this.disposables.push(this.glowTexture, this.cloudTexture);
+    this.smokeTexture = this.createSmokeTexture();
+    this.disposables.push(this.glowTexture, this.cloudTexture, this.smokeTexture);
 
     this.skyUniforms = { uSunDir: { value: SUN_DIRECTION.clone() } };
     this.sky = this.createSky();
@@ -140,7 +201,8 @@ export class CockpitScene {
     this.sunLight.target = new THREE.Object3D();
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
-    this.scene.add(new THREE.HemisphereLight(0x8ebbe0, 0x3c2c26, 0.82));
+    this.hemisphere = new THREE.HemisphereLight(0x8ebbe0, 0x3c2c26, 0.82);
+    this.scene.add(this.hemisphere);
     this.scene.add(new THREE.AmbientLight(0x182a35, 1.15));
     const frontFill = new THREE.DirectionalLight(0x7fa6b4, 0.65);
     frontFill.position.set(0, 3000, 5000);
@@ -149,17 +211,39 @@ export class CockpitScene {
     underFill.position.set(0, -5000, -6500);
     this.scene.add(underFill);
 
+    // A fixed pool of impact lights. They stay in the graph with intensity 0 so
+    // the light count never changes — adding or removing a light would force
+    // three.js to recompile every material mid-dogfight.
+    if (this.resolvedQuality === 'high') {
+      for (let index = 0; index < FLASH_POOL; index += 1) {
+        const light = new THREE.PointLight(0xffb266, 0, 3000, 2);
+        light.position.set(0, -100000, 0);
+        this.scene.add(light);
+        this.flashLights.push(light);
+        this.flashTimers.push(0);
+      }
+    }
+
     this.buildCanopy();
     this.buildCloudPuffs();
+    this.buildSmokeTrails();
     this.resize();
 
     this.unsubscribe = engine.on((event) => {
       if (event.type === 'explosion') {
         this.shake = Math.min(1.2, this.shake + event.scale / 420);
+        this.flashAt(event.position, Math.min(1, event.scale / 60));
+        this.kickFromPoint(event.position, Math.min(1, event.scale / 60) * 0.9);
       } else if (event.type === 'damage') {
         this.shake = Math.min(1.2, this.shake + 0.28);
+        this.kickFromBearing(event.bearing, 0.24 + event.amount * 0.012);
       } else if (event.type === 'gun-fire') {
         this.shake = Math.min(0.6, this.shake + 0.015);
+        this.kick(0.05, randomBetween(-0.03, 0.03));
+      } else if (event.type === 'hit') {
+        if (event.mine) this.kick(event.kill ? 0.34 : 0.11, randomBetween(-0.05, 0.05));
+      } else if (event.type === 'kill') {
+        this.shake = Math.min(1.4, this.shake + 0.45);
       }
     });
 
@@ -191,6 +275,11 @@ export class CockpitScene {
     this.effectObjects.clear();
     for (const puff of this.puffs) disposeObject(puff);
     this.puffs.length = 0;
+    for (const sprite of this.smokeTrails) disposeObject(sprite);
+    this.smokeTrails.length = 0;
+    for (const light of this.flashLights) this.scene.remove(light);
+    this.flashLights.length = 0;
+    this.flashTimers.length = 0;
     disposeObject(this.canopyGroup);
     disposeObject(this.sky);
     disposeObject(this.cloudDeck);
@@ -214,8 +303,11 @@ export class CockpitScene {
     this.updateCamera(flight, delta, paused);
     this.updateWorld(delta, paused);
     this.syncEntities(delta);
-    this.syncEffects();
+    this.syncEffects(delta);
+    this.updateSmokeTrails(delta, paused);
+    this.updateFlashes(delta);
     this.updateProjections();
+    this.updateAtmosphere(delta, paused);
     this.renderer.render(this.scene, this.camera);
 
     if (!this.autoQualityChecked && this.resolvedQuality === 'high') {
@@ -242,6 +334,7 @@ export class CockpitScene {
     paused: boolean,
   ): void {
     this.shake = Math.max(0, this.shake - delta * (paused ? 2 : 1.6));
+    this.integrateImpulse(delta, paused);
     const buffetBase = this.reducedMotion ? 0 : 0.0009 + flight.gLoad * 0.00045;
     const buffet = paused ? 0 : buffetBase;
     const shake = this.reducedMotion ? 0 : this.shake * 0.018;
@@ -250,16 +343,177 @@ export class CockpitScene {
     const shakeX = Math.sin(time * 71) * (buffet + shake * 0.5) + Math.sin(time * 113) * shake;
     const shakeY = Math.cos(time * 59) * (buffet + shake * 0.4);
     const shakeZ = Math.sin(time * 83) * buffet * 0.7;
+    const jolt = this.reducedMotion ? 0 : 1;
 
     const euler = new THREE.Euler(
-      flight.pitch + shakeX,
-      flight.yaw + shakeY,
-      flight.roll + shakeZ,
+      flight.pitch + shakeX + this.impulse.x * jolt,
+      flight.yaw + shakeY + this.impulse.y * jolt,
+      flight.roll + shakeZ + this.impulse.z * jolt,
       'YXZ',
     );
     this.camera.quaternion.setFromEuler(euler);
     this.camera.position.set(flight.position.x, flight.position.y, flight.position.z);
     this.camera.updateMatrixWorld();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.3 impact feel                                                    */
+  /* ------------------------------------------------------------------ */
+
+  /** A decaying rotational jolt, integrated as a critically damped spring. */
+  private integrateImpulse(delta: number, paused: boolean): void {
+    if (paused) {
+      this.impulse.set(0, 0, 0);
+      this.impulseVelocity.set(0, 0, 0);
+      return;
+    }
+    this.impulseVelocity.addScaledVector(this.impulse, -IMPULSE_STIFFNESS * delta);
+    this.impulseVelocity.multiplyScalar(Math.max(0, 1 - IMPULSE_DAMPING * delta));
+    this.impulse.addScaledVector(this.impulseVelocity, delta);
+  }
+
+  /** Recoil / hit punch: a short spike on pitch, with a little roll noise. */
+  private kick(pitch: number, roll: number): void {
+    this.impulseVelocity.x -= pitch * 9;
+    this.impulseVelocity.z += roll * 9;
+  }
+
+  /** Push the nose away from a blast, scaled by how close it went off. */
+  private kickFromPoint(origin: { x: number; y: number; z: number }, strength: number): void {
+    const yaw = this.engine.getFlight().yaw;
+    const dx = this.camera.position.x - origin.x;
+    const dz = this.camera.position.z - origin.z;
+    const lateral = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+    const ahead = -dx * Math.sin(yaw) - dz * Math.cos(yaw);
+    const span = Math.hypot(lateral, ahead) || 1;
+    this.impulseVelocity.z += (lateral / span) * strength * 4.5;
+    this.impulseVelocity.x -= (ahead / span) * strength * 3;
+  }
+
+  /** Damage jolt: the airframe lurches away from the side it was hit on. */
+  private kickFromBearing(bearing: number, strength: number): void {
+    const radians = (bearing * Math.PI) / 180;
+    this.impulseVelocity.z += Math.sin(radians) * strength * 5;
+    this.impulseVelocity.x -= Math.cos(radians) * strength * 2.6;
+  }
+
+  /** Light an explosion with a pooled point light so the clouds react to it. */
+  private flashAt(position: { x: number; y: number; z: number }, intensity: number): void {
+    if (this.flashLights.length === 0) return;
+    const index = this.flashCursor % this.flashLights.length;
+    this.flashCursor += 1;
+    const light = this.flashLights[index];
+    if (!light) return;
+    light.position.set(position.x, position.y, position.z);
+    light.distance = 2600 + intensity * 6000;
+    light.intensity = 1200 + intensity * 6400;
+    this.flashTimers[index] = 0.2 + intensity * 0.3;
+  }
+
+  private updateFlashes(delta: number): void {
+    for (let index = 0; index < this.flashLights.length; index += 1) {
+      const light = this.flashLights[index];
+      if (!light) continue;
+      const timer = this.flashTimers[index] ?? 0;
+      if (timer <= 0) {
+        if (light.intensity !== 0) light.intensity = 0;
+        continue;
+      }
+      this.flashTimers[index] = timer - delta;
+      light.intensity *= Math.max(0, 1 - delta * 7.5);
+      if ((this.flashTimers[index] ?? 0) <= 0) light.intensity = 0;
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.3 battle atmosphere                                              */
+  /* ------------------------------------------------------------------ */
+
+  private buildSmokeTrails(): void {
+    const count = this.resolvedQuality === 'high' ? 30 : 12;
+    for (let index = 0; index < count; index += 1) {
+      const material = new THREE.SpriteMaterial({
+        map: this.smokeTexture,
+        color: 0x2c2c30,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const sprite = new THREE.Sprite(material);
+      sprite.visible = false;
+      sprite.userData.life = 0;
+      sprite.userData.maxLife = 1;
+      sprite.userData.baseScale = 30;
+      this.smokeTrails.push(sprite);
+      this.scene.add(sprite);
+    }
+  }
+
+  /**
+   * Wounded aircraft bleed smoke. The sim never emits these — they are a pure
+   * rendering affordance, recycled from a fixed pool so a long fight cannot
+   * grow the draw-call count.
+   */
+  private updateSmokeTrails(delta: number, paused: boolean): void {
+    for (const sprite of this.smokeTrails) {
+      const life = sprite.userData.life as number;
+      if (life <= 0) continue;
+      const maxLife = Math.max(0.001, sprite.userData.maxLife as number);
+      const next = life - delta;
+      sprite.userData.life = next;
+      const progress = 1 - Math.max(0, next) / maxLife;
+      const material = sprite.material as THREE.SpriteMaterial;
+      sprite.scale.setScalar((sprite.userData.baseScale as number) * (1 + progress * 2.6));
+      material.opacity = Math.max(0, 1 - progress) * 0.52;
+      sprite.position.y += delta * 7;
+      if (next <= 0) sprite.visible = false;
+    }
+    if (paused) return;
+
+    this.smokeClock -= delta;
+    if (this.smokeClock > 0) return;
+    this.smokeClock = SMOKE_INTERVAL;
+    for (const entity of this.engine.getEntities()) {
+      if (!entity.alive) continue;
+      if (entity.kind !== 'fighter' && entity.kind !== 'wingman') continue;
+      const ratio = entity.hp / Math.max(1, entity.maxHp);
+      if (ratio > SMOKE_HULL) continue;
+      const sprite = this.smokeTrails[this.smokeCursor % this.smokeTrails.length];
+      this.smokeCursor += 1;
+      if (!sprite) continue;
+      const severity = 1 - ratio / SMOKE_HULL;
+      sprite.visible = true;
+      sprite.position.set(entity.position.x, entity.position.y, entity.position.z);
+      sprite.userData.maxLife = 1 + severity * 0.9;
+      sprite.userData.life = sprite.userData.maxLife;
+      sprite.userData.baseScale = 24 + severity * 30;
+      sprite.scale.setScalar(sprite.userData.baseScale as number);
+      const material = sprite.material as THREE.SpriteMaterial;
+      material.opacity = 0.52;
+      material.color.setHex(severity > 0.7 ? 0x141416 : 0x3a3a40);
+    }
+  }
+
+  /**
+   * Grade the picture with the same 0..1 intensity the score uses: calm skies
+   * stay bright and warm, a heavy fight gets hazier, cooler and slightly
+   * darker, so the mood tracks the music without a single extra draw call.
+   */
+  private updateAtmosphere(delta: number, paused: boolean): void {
+    const intensity = paused ? 0.25 : this.engine.getIntensity();
+    const targetExposure = 1.08 - intensity * 0.16;
+    this.exposure += (targetExposure - this.exposure) * Math.min(1, delta * 1.4);
+    this.renderer.toneMappingExposure = this.exposure;
+
+    const fog = this.scene.fog as THREE.FogExp2 | null;
+    if (fog) {
+      const targetDensity = 0.000075 + intensity * 0.00005;
+      fog.density += (targetDensity - fog.density) * Math.min(1, delta * 1.2);
+      fog.color.setHex(this.fogBase).offsetHSL(0, intensity * 0.05, -intensity * 0.05);
+    }
+    if (this.hemisphere) {
+      this.hemisphere.intensity = 0.82 + intensity * 0.2;
+    }
   }
 
   private updateWorld(delta: number, paused: boolean): void {
@@ -1334,7 +1588,7 @@ export class CockpitScene {
   /* effects                                                             */
   /* ------------------------------------------------------------------ */
 
-  private syncEffects(): void {
+  private syncEffects(delta: number): void {
     const effects = this.engine.getEffects();
     const ids = new Set<string>();
     for (const effect of effects) {
@@ -1347,7 +1601,7 @@ export class CockpitScene {
         this.effectObjects.set(effect.id, object);
         this.scene.add(object);
       }
-      this.animateEffect(object, effect);
+      this.animateEffect(object, effect, delta);
     }
     for (const [id, object] of this.effectObjects) {
       if (ids.has(id)) continue;
@@ -1378,31 +1632,65 @@ export class CockpitScene {
       line.frustumCulled = false;
       return line;
     }
+    if (effect.kind === 'shield') {
+      // A thin billboarded ring. Geometry is per-effect so the shared pool can
+      // keep disposing freely when the ripple expires.
+      const material = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.74, 1, 44), material);
+      ring.scale.setScalar(Math.max(2, effect.scale * 0.5));
+      ring.frustumCulled = false;
+      return ring;
+    }
+    // Smoke and flak are matter, not light: they must not be additive or they
+    // read as glowing fog instead of a burning airframe and dirty shell bursts.
+    const matte = MATTE_EFFECTS.has(effect.kind);
     const material = new THREE.SpriteMaterial({
-      map: this.glowTexture,
-      color,
-      blending: THREE.AdditiveBlending,
+      map: matte ? this.smokeTexture : this.glowTexture,
+      color: matte ? (effect.kind === 'flak' ? 0x3c3c42 : 0x2a2a2e) : color,
+      blending: matte ? THREE.NormalBlending : THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false,
       opacity: effect.kind === 'explosion' ? 0.95 : 0.8,
     });
     const sprite = new THREE.Sprite(material);
-    const multiplier = effect.kind === 'shockwave' ? 4.2 : effect.kind === 'muzzle' ? 1.8 : 2.4;
-    sprite.scale.setScalar(Math.max(2, effect.scale * multiplier));
+    sprite.scale.setScalar(Math.max(2, effect.scale * EFFECT_SCALE[effect.kind]));
+    if (effect.kind === 'debris') {
+      sprite.center.set(0.5, 0.5);
+      material.rotation = effect.seed * Math.PI * 2;
+    }
     return sprite;
   }
 
-  private animateEffect(object: THREE.Object3D, effect: SimEffect): void {
+  private animateEffect(object: THREE.Object3D, effect: SimEffect, delta: number): void {
     const life = Math.max(0, effect.life);
     const progress = 1 - life / Math.max(0.001, effect.maxLife);
     object.position.set(effect.position.x, effect.position.y, effect.position.z);
-    const material = (object as THREE.Sprite).material as THREE.SpriteMaterial | undefined;
-    if (object instanceof THREE.Sprite && material) {
-      const base = effect.kind === 'shockwave' ? 4.2 : effect.kind === 'muzzle' ? 1.8 : 2.4;
-      const expansion = effect.kind === 'shockwave' ? 1 + progress * 2.4 : 1 + progress * 0.7;
-      object.scale.setScalar(Math.max(2, effect.scale * base * expansion));
-      material.opacity = Math.max(0, 1 - progress) * 0.9;
-    } else if (object instanceof THREE.Line) {
+    if (object instanceof THREE.Mesh) {
+      // Shield ripple: a thin ring that races outward and dies fast.
+      const material = object.material as THREE.MeshBasicMaterial;
+      object.scale.setScalar(Math.max(2, effect.scale * (0.5 + progress * 2.6)));
+      material.opacity = Math.max(0, 1 - progress) ** 1.6 * 0.85;
+      object.quaternion.copy(this.camera.quaternion);
+      return;
+    }
+    if (object instanceof THREE.Sprite) {
+      const material = object.material as THREE.SpriteMaterial;
+      const base = EFFECT_SCALE[effect.kind];
+      const expansion = EFFECT_EXPANSION[effect.kind];
+      object.scale.setScalar(Math.max(1, effect.scale * base * (1 + progress * expansion)));
+      const fade = Math.max(0, 1 - progress);
+      material.opacity = effect.kind === 'spark' ? fade ** 0.7 : fade * 0.9;
+      if (effect.spin !== 0) material.rotation += effect.spin * delta;
+      return;
+    }
+    if (object instanceof THREE.Line) {
       const lineMaterial = object.material as THREE.LineBasicMaterial;
       lineMaterial.opacity = Math.max(0, 1 - progress);
     }
@@ -1531,6 +1819,36 @@ export class CockpitScene {
         gradient.addColorStop(0, 'rgba(255,236,216,0.34)');
         gradient.addColorStop(0.55, 'rgba(214,190,190,0.16)');
         gradient.addColorStop(1, 'rgba(160,140,150,0)');
+        context.fillStyle = gradient;
+        context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      }
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
+
+  /**
+   * Soft, slightly irregular puff used for damage smoke and flak bursts. Drawn
+   * with normal blending and a light gust of noise so a trail does not read as
+   * a row of identical circles.
+   */
+  private createSmokeTexture(): THREE.Texture {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.clearRect(0, 0, size, size);
+      for (let index = 0; index < 7; index += 1) {
+        const x = size / 2 + randomBetween(-16, 16);
+        const y = size / 2 + randomBetween(-16, 16);
+        const radius = randomBetween(20, 44);
+        const gradient = context.createRadialGradient(x, y, 0, x, y, radius);
+        gradient.addColorStop(0, 'rgba(255,255,255,0.5)');
+        gradient.addColorStop(0.5, 'rgba(255,255,255,0.22)');
+        gradient.addColorStop(1, 'rgba(255,255,255,0)');
         context.fillStyle = gradient;
         context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
       }

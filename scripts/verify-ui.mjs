@@ -83,6 +83,87 @@ try {
   await page.keyboard.press('y');
   await page.waitForTimeout(300);
 
+  // --- v0.3 impact: a gun run on a target pinned dead ahead ---------------
+  // The marker only lives 0.42 s, so the target is held in the gun cone from a
+  // rAF loop rather than hoping the AI cooperates with the screenshot timing.
+  await page.evaluate(() => {
+    const engine = window.__THEVE__.engine;
+    const hostile = engine
+      .getEntities()
+      .find((entity) => entity.alive && entity.kind === 'fighter' && entity.team === 'hostile');
+    if (!hostile) return;
+    hostile.maxHp = 9000;
+    hostile.hp = 9000;
+    window.__PIN__ = { id: hostile.id, distance: 620 };
+    const pin = () => {
+      const state = window.__PIN__;
+      const target = state
+        ? window.__THEVE__?.engine.getEntities().find((entity) => entity.id === state.id)
+        : null;
+      const flight = window.__THEVE__?.engine.flight;
+      if (state && target?.alive && flight) {
+        const cosPitch = Math.cos(flight.pitch);
+        const forward = {
+          x: -Math.sin(flight.yaw) * cosPitch,
+          y: Math.sin(flight.pitch),
+          z: -Math.cos(flight.yaw) * cosPitch,
+        };
+        target.position = {
+          x: flight.position.x + forward.x * state.distance,
+          y: flight.position.y + forward.y * state.distance,
+          z: flight.position.z + forward.z * state.distance,
+        };
+        target.yaw = flight.yaw;
+        target.pitch = flight.pitch;
+        target.speed = flight.speed;
+      }
+      requestAnimationFrame(pin);
+    };
+    requestAnimationFrame(pin);
+  });
+
+  await page.keyboard.down('j');
+  await page.waitForTimeout(800);
+  await shot('14-hit-confirm-1920');
+  await page.keyboard.up('j');
+  await page.waitForTimeout(120);
+
+  // --- v0.3 impact: the killing burst and the splash ticker ---------------
+  await page.evaluate(() => {
+    const engine = window.__THEVE__.engine;
+    const target = engine.getEntities().find((entity) => entity.id === window.__PIN__?.id);
+    if (target) target.hp = 14;
+  });
+  await page.keyboard.down('j');
+  await page.waitForTimeout(420);
+  await page.keyboard.up('j');
+  await page.waitForTimeout(180);
+  await shot('15-splash-1920');
+
+  // --- v0.3 impact: damage bearings ---------------------------------------
+  await page.evaluate(() => {
+    const engine = window.__THEVE__.engine;
+    const flight = engine.flight;
+    const right = { x: Math.cos(flight.yaw), y: 0, z: -Math.sin(flight.yaw) };
+    engine.damagePlayer(14, {
+      x: flight.position.x + right.x * 320,
+      y: flight.position.y + 40,
+      z: flight.position.z + right.z * 320,
+    });
+    engine.damagePlayer(9, {
+      x: flight.position.x - right.x * 320,
+      y: flight.position.y - 30,
+      z: flight.position.z - right.z * 320,
+    });
+  });
+  await page.waitForTimeout(320);
+  await shot('16-damage-bearing-1920');
+  await page.evaluate(() => {
+    window.__PIN__ = null;
+    window.__THEVE__.engine.flight.hp = 82;
+  });
+  await page.waitForTimeout(200);
+
   await page.evaluate(() => window.__THEVE__?.triggerBoss());
   await page.waitForTimeout(1400);
   await shot('04-boss-1920');
