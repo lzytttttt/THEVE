@@ -10,6 +10,7 @@ import {
   IconWarning,
 } from '../icons';
 import { AssistRail, ManeuverRail } from './maneuvers';
+import { AutoPilotButton } from './autopilot';
 
 export interface CockpitControlsProps {
   className?: string;
@@ -135,6 +136,16 @@ export function CockpitControls({ className }: CockpitControlsProps) {
           </span>
         </div>
         <AssistRail compact />
+      </div>
+
+      <div className="tv-controls__module tv-controls__auto">
+        <div className="tv-controls__module-head">
+          <span>AUTO PILOT</span>
+          <span className={cx('tv-mono', snapshot.auto.engaged && 'tv-cyan')}>
+            {snapshot.auto.engaged ? snapshot.auto.code : 'MANUAL'}
+          </span>
+        </div>
+        <AutoPilotButton />
       </div>
 
       <div className="tv-controls__module tv-controls__trigger">

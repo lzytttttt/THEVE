@@ -69,7 +69,7 @@ describe('CockpitEngine targeting and weapons', () => {
     expect(lock.progress).toBeGreaterThanOrEqual(0.99);
 
     engine.fireMissile();
-    expect(engine.weapons.missiles).toBe(7);
+    expect(engine.weapons.missiles).toBe(9);
     expect(engine.getSnapshot().mission.stats.missilesFired).toBe(1);
     expect(engine.getEntities().some((entity) => entity.kind === 'missile')).toBe(true);
   });
@@ -81,7 +81,9 @@ describe('CockpitEngine targeting and weapons', () => {
       bossTriggerAt: 600,
     });
     engine.fireMissile();
-    expect(engine.weapons.missiles).toBe(8);
+    // v0.4 raised the rail to ten: three waves and a dreadnought is not an
+    // eight-missile sortie.
+    expect(engine.weapons.missiles).toBe(10);
     expect(engine.getSnapshot().warnings.some((warning) => warning.message === 'NO LOCK')).toBe(true);
   });
 

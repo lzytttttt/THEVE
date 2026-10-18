@@ -177,3 +177,22 @@ export const IconHelp = createIcon(
     <path d="M12 17v.6" />
   </>,
 );
+
+/** v0.4 AUTO ACE — a winged chevron inside a guidance circle. */
+export const IconAuto = createIcon(
+  'IconAuto',
+  <>
+    <circle cx="12" cy="12" r="9" strokeDasharray="3 2.4" />
+    <path d="M12 5.4 14 11l4.6 3v1.3L14 14.2 13 18l1.4 1.4h-4.8L11 18l-1-3.8-4.6 1.1V14l4.6-3L12 5.4Z" />
+  </>,
+);
+
+/** v0.4 wave director — a stacked inbound formation. */
+export const IconWave = createIcon(
+  'IconWave',
+  <>
+    <path d="M2 15.5c2.6 0 3.4-3 6-3s3.4 3 6 3 3.4-3 6-3" />
+    <path d="M2 19.5c2.6 0 3.4-3 6-3s3.4 3 6 3 3.4-3 6-3" />
+    <path d="M12 3 15 9h-6l3-6Z" />
+  </>,
+);

@@ -10,8 +10,7 @@ import {
   formatClock,
 } from '@theve/ui';
 import { CockpitViewport } from '@theve/ui/three';
-import { CockpitHud, CockpitControls, IconButton } from '@theve/ui';
-import { IconExpand, IconHelp, IconPause, IconSoundOff, IconSoundOn, cx } from '@theve/ui';
+import { CockpitHud, CockpitControls, IconButton } from '@theve/ui';import { IconExpand, IconHelp, IconPause, IconSoundOff, IconSoundOn, cx } from '@theve/ui';
 import { Brand, BrandRule } from '../brand';
 import { useFps } from '../useFps';
 import type { Route } from '../App';
@@ -113,12 +112,25 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
     actions.restart();
   }, [actions]);
 
+  /**
+   * The one-key clear. It engages the performer from wherever the mission is —
+   * briefing, self-test, mid-fight or debrief — and the performer takes it from
+   * there, including launching and re-launching itself after a shoot-down.
+   */
+  const engageAutoAce = useCallback(() => {
+    setOverlay('none');
+    actions.setAutoPilot(true);
+  }, [actions]);
+
   useCockpitControls({
     enabled: activePhase && overlay === 'none' && !portraitBlocked,
     invertPitch: settings.invertPitch,
     onPause: openPause,
     onHelp: openHelp,
     onMute: audio.toggleMute,
+    onAutoPilot: (engaged) => {
+      if (engaged) setOverlay('none');
+    },
   });
 
   useEffect(() => {
@@ -177,6 +189,18 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
       },
       phase: () => engine.phase,
       engine,
+      /** v0.4: engage AUTO ACE without a user gesture, for screenshots and smoke tests. */
+      autoAce: (enabled = true) => {
+        setOverlay('none');
+        actions.setAutoPilot(enabled);
+      },
+      /** v0.4: advance the simulation headlessly, so a test can watch a sortie. */
+      step: (seconds: number) => {
+        const dt = 1 / 60;
+        const steps = Math.max(1, Math.ceil(seconds / dt));
+        for (let index = 0; index < steps; index += 1) engine.update(dt);
+        return engine.getSnapshot();
+      },
     };
     return () => {
       delete window.__THEVE__;
@@ -273,6 +297,7 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
           onLaunch={launch}
           onExit={() => onNavigate('attract')}
           muted={audio.muted}
+          onAutoAce={engageAutoAce}
         />
       )}
       {showBoot && <BootOverlay onSkip={actions.skipBoot} />}

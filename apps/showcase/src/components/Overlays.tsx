@@ -7,6 +7,7 @@ import type {
   CockpitSnapshot,
 } from '@theve/ui';
 import {
+  AutoPilotButton,
   Button,
   IconArrowRight,
   IconCheck,
@@ -37,7 +38,19 @@ const CONTROLS: Array<[string, string, string]> = [
   ['TAB', '切换目标', 'TARGET'],
   ['F', '热焰弹', 'FLARE'],
   ['Y', '辅助驾驶开关', 'FLIGHT AIDS'],
+  ['G', '全自动皇牌模式（一键通关）', 'AUTO ACE'],
   ['P / ESC', '暂停', 'PAUSE'],
+];
+
+/** v0.4 threat database, mirrored from the engine's roster table. */
+const ENEMY_ROSTER: Array<[string, string, string, string]> = [
+  ['SCT', '维斯珀 侦察机', '轻装高速、无导弹：逼你跟着它掉能量', 'VESPER SCOUT'],
+  ['INT', '维斯珀 截击机', '编队主力，中距 AAM 加机炮点射', 'VESPER INTERCEPTOR'],
+  ['HVY', '维斯珀 重装攻击机', '装甲厚、转向差，机炮压制最痛', 'VESPER HEAVY'],
+  ['JAM', '维斯珀 电子战机', '活着就一直压制火控：锁定速度减半', 'VESPER JAMMER'],
+  ['ACE', '维斯珀 王牌', '出手早、冷却短，别让它咬住你', 'VESPER ACE'],
+  ['CMD', '维斯珀 指挥机', '编队长机：击落它等于拆掉整队的大脑', 'VESPER COMMANDER'],
+  ['DRN', '利维坦 无人机', '巨兽放出的消耗品，个体弱但数量多', 'LEVIATHAN DRONE'],
 ];
 
 const MANEUVERS: Array<[string, string, string]> = [
@@ -186,9 +199,11 @@ export interface BriefingOverlayProps {
   onLaunch: () => void;
   onExit: () => void;
   muted: boolean;
+  /** v0.4: hand the whole sortie to AUTO ACE from the briefing card. */
+  onAutoAce: () => void;
 }
 
-export function BriefingOverlay({ onLaunch, onExit, muted }: BriefingOverlayProps) {
+export function BriefingOverlay({ onLaunch, onExit, muted, onAutoAce }: BriefingOverlayProps) {
   return (
     <div
       className="game-overlay game-overlay--briefing"
@@ -212,9 +227,10 @@ export function BriefingOverlay({ onLaunch, onExit, muted }: BriefingOverlayProp
               <span>落日之矛</span>
             </h1>
             <p className="brief-panel__copy">
-              LUMEN 1，VESPER 编队已经越过落日空域的中线。你的任务是撕开他们的护航，
-              在 LEVIATHAN 完成核心充能之前，把两枚护盾节点从它的脊背上摘下来。
-              云海之上没有第二道防线。
+              LUMEN 1，VESPER 编队已经越过落日空域的中线，而且是分三波进来的：
+              先锋、主队、最后是带着电子战机与重装机的指挥编队。
+              把八架全部清掉，LEVIATHAN 才会露头——然后在你把两枚护盾节点
+              从它脊背上摘下来之前，云海之上没有第二道防线。
             </p>
             <div className="brief-panel__objectives">
               <div className="brief-panel__objectives-head">
@@ -225,8 +241,8 @@ export function BriefingOverlay({ onLaunch, onExit, muted }: BriefingOverlayProp
                 <li>
                   <span className="tv-mono">01</span>
                   <div>
-                    <strong>拦截 VESPER 编队</strong>
-                    <small className="tv-mono">INTERCEPT THE VESPER FLIGHT</small>
+                    <strong>逐波拦截 VESPER 编队</strong>
+                    <small className="tv-mono">CLEAR THREE WAVES · 8 BANDITS</small>
                   </div>
                   <em className="tv-mono">DOGFIGHT</em>
                 </li>
@@ -341,8 +357,11 @@ export function BriefingOverlay({ onLaunch, onExit, muted }: BriefingOverlayProp
             >
               升空 / LAUNCH
             </Button>
+            <AutoPilotButton variant="solo" onClick={onAutoAce} />
             <div className="brief-panel__hint tv-mono">
               <Keycap>ENTER</Keycap> 开始任务
+              <span>·</span>
+              <Keycap>G</Keycap> 全自动通关
               <span>·</span>
               <button type="button" className="brief-panel__back" onClick={onExit}>
                 返回开场
@@ -573,7 +592,7 @@ export function PauseOverlay({
           <span>
             <Keycap>ESC</Keycap> 恢复
           </span>
-          <span>THEVE // TACS-8 · SIMULATION CORE v0.3</span>
+          <span>THEVE // TACS-8 · SIMULATION CORE v0.4</span>
         </div>
       </div>
     </div>
@@ -615,8 +634,12 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
             <h3 className="tv-mono">TACTICS / 战术提示</h3>
             <ol className="help-tips">
               <li>
-                <strong>先锁定，后发射。</strong>
-                保持目标在准星内约 1 秒；目标引导辅助会把机头轻轻带过去，但决定权在你。
+                <strong>先打干扰机，再打别人。</strong>
+                VESPER 电子战机只要活着，锁定速度就只有一半。看到紫色涂装优先处理。
+              </li>
+              <li>
+                <strong>把机炮留给护航，把导弹留给巨兽。</strong>
+                八架敌机分三波进来，每波抵达时都会补给弹药；护盾节点很吃导弹，但机炮也能磨。
               </li>
               <li>
                 <strong>热焰弹是保命键。</strong>
@@ -627,15 +650,35 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
                 咬不住时按住 C 收紧盘旋，被咬住时按 X 让他冲前。
               </li>
               <li>
-                <strong>护盾节点只吃导弹。</strong>
-                机炮可以补刀，但优先把 AAM 留给巨兽的弱点。
-              </li>
-              <li>
-                <strong>垂直机动是脱离弹幕的答案。</strong>
-                破S 用高度换速度，殷麦曼一次掉头 180° 并抢回高度。
+                <strong>别把机头停在重装机的炮口前。</strong>
+                它的转向很差，但 13 dps 的机炮会在你停留的两秒里把机体打穿。
               </li>
             </ol>
           </section>
+          <section className="dialog-panel__section">
+            <h3 className="tv-mono">THREAT DB / 敌机识别</h3>
+            <ul className="help-roster">
+              {ENEMY_ROSTER.map(([code, zh, role, en]) => (
+                <li key={code}>
+                  <b className="tv-mono">{code}</b>
+                  <div>
+                    <strong>{zh}</strong>
+                    <small>{role}</small>
+                  </div>
+                  <em className="tv-mono">{en}</em>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+        <div className="dialog-panel__tip dialog-panel__tip--auto">
+          <IconScan size={14} />
+          <span>
+            <strong className="tv-mono">AUTO ACE / 全自动皇牌模式</strong>
+            按 G 把杆交给飞控：它会自己升空、自己选目标、自己在正确的时机做眼镜蛇、
+            库尔比特与殷麦曼，把整场任务打完；被击落会在几秒后重新升空。
+            它用的每一项操作都与你手动时完全相同——同样的飞行模型、同样的弹药、同样的评分。
+          </span>
         </div>
         <div className="dialog-panel__actions">
           <Button variant="primary" onClick={onClose} data-autofocus>

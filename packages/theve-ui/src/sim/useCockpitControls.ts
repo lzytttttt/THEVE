@@ -10,6 +10,8 @@ export interface CockpitControlOptions {
   onHelp?: () => void;
   onMute?: () => void;
   onRestart?: () => void;
+  /** v0.4: fired after `G` hands the sortie to the performer (or takes it back). */
+  onAutoPilot?: (engaged: boolean) => void;
 }
 
 const MOVEMENT_KEYS = new Set([
@@ -164,6 +166,13 @@ export function useCockpitControls(options: CockpitControlOptions = {}): void {
           break;
         case 'KeyY':
           actions.toggleAssists();
+          break;
+        case 'KeyG':
+          // The one-key clear. It launches from the briefing, waits out the
+          // self-test on its own, and keeps flying after a shoot-down.
+          event.preventDefault();
+          releaseAll();
+          optionsRef.current.onAutoPilot?.(actions.toggleAutoPilot());
           break;
         case 'Digit1':
           actions.selectWeapon('aam');

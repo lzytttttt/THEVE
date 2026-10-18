@@ -36,10 +36,34 @@ import {
   type AssistSolution,
 } from './assists';
 import { buildTutorialState, createTutorialFlags, type TutorialFlags } from './tutorial';
+import {
+  createAIState,
+  enemyPriority,
+  enemyProfile,
+  ENEMIES,
+  resolveEnemyId,
+  SHOWCASE_ORDER,
+  waveBriefing,
+  waveReady,
+  type EnemyProfile,
+} from './enemies';
+import {
+  autoPilotCondition,
+  autoPilotShown,
+  AUTO_MODE_LABEL,
+  createAutoPilotMemory,
+  resetAutoPilotMemory,
+  solveAutoPilot,
+  type AutoPilotContact,
+  type AutoPilotMemory,
+  type AutoPilotThreat,
+  type AutoPilotWorld,
+} from './autopilot';
 import type {
   AssistId,
   AssistSettings,
   AudioTelemetry,
+  AutoPilotHud,
   BossHud,
   CockpitSnapshot,
   CombatFeedback,
@@ -48,6 +72,7 @@ import type {
   ControlInput,
   EffectColor,
   EffectKind,
+  EnemyId,
   FlightState,
   HitMarker,
   HudTarget,
@@ -60,7 +85,9 @@ import type {
   MissionStats,
   Projection,
   RadarContact,
+  RosterEntry,
   Scenario,
+  ScenarioWave,
   SimEffect,
   SimEntity,
   SimEvent,
@@ -68,17 +95,28 @@ import type {
   TutorialStepId,
   Vec3,
   WarningState,
+  WaveHud,
   WeakpointKey,
   WeaponId,
   WingmanHud,
 } from './types';
 
-const MISSILE_MAX = 8;
+const MISSILE_MAX = 10;
 const GUN_MAX = 900;
 const FLARE_MAX = 6;
 const LOCK_CONE_DEG = 12;
 const LOCK_RANGE = 3600;
 const LOCK_TIME = 0.9;
+/**
+ * v0.4 gun envelope. v0.3's 5.5° / 1750 m was tuned against a three-ship
+ * formation where every bandit came at you head-on. Against the eight-plus of
+ * v0.4, with escorts crossing the nose and a dreadnought's shield nodes to
+ * strafe, it left gunnery as a lottery rather than a skill. A slightly wider
+ * envelope keeps the gun a weapon you have to point, while making pointing it
+ * actually pay.
+ */
+const GUN_CONE_DEG = 7.5;
+const GUN_RANGE = 2000;
 const PLAYER_MAX_HP = 100;
 const RADAR_RANGE = 9000;
 
@@ -148,6 +186,23 @@ const EFFECT_PRIORITY: Record<EffectKind, number> = {
 const AMBIENCE_INTERVAL: Partial<Record<MissionPhase, [number, number]>> = {
   dogfight: [2.6, 4.8],
   boss: [1.5, 3.1],
+};
+
+/**
+ * v0.4: hull patched at the mid-mission resupply. The bandit count tripled and
+ * they carry guns now, so the second half of the sortie needs the concession.
+ */
+const RESUPPLY_REPAIR = 38;
+
+/** v0.4: the wingman gets a different line for every airframe class. */
+const KILL_LINES: Record<EnemyId, string[]> = {
+  scout: ['侦察机清掉了，他跑得再快也没你快。', '那个轻家伙散了，雷达干净一点。'],
+  interceptor: ['VESPER 被击落，干得漂亮。', '确认击落，雷达上少了一个光点。'],
+  heavy: ['重装机解体了！那身装甲也没扛住。', '好，机炮压制解除了 — 刚才那阵弹雨真够呛。'],
+  jammer: ['干扰机掉了！火控恢复正常，趁现在。', '电子战机被击落，锁定速度回来了。'],
+  drone: ['无人机清了一架，还剩不少。', '打掉一个，它们实在太多。'],
+  ace: ['王牌掉了！这就是 CIRRUS 的答案。', 'VESPER ACE 被击落，敌编队正在崩溃。'],
+  commander: ['指挥机被击落！他们的编队散了 — 就是现在！', '长机掉了，剩下的在乱飞。'],
 };
 
 interface FlakStrike {
@@ -300,6 +355,22 @@ export class CockpitEngine {
   private ambience: AmbientStrike[] = [];
   private ambienceTimer = 0;
 
+  /* --- v0.4 waves & auto-pilot --------------------------------------- */
+  /** How many reinforcement waves have already been released. */
+  private waveIndex = 0;
+  /** Short timer that lights up the "wave inbound" HUD flash. */
+  private waveInboundTimer = 0;
+  /** Airframe classes allocated to this sortie, for the roster readout. */
+  private roster = new Map<EnemyId, number>();
+  /** Bandits already shot down, per airframe class. */
+  private rosterDown = new Map<EnemyId, number>();
+  private jammerEngaged = false;
+  private autoPilot = false;
+  private autoMemory: AutoPilotMemory = createAutoPilotMemory();
+  private autoRetryTimer: number | null = null;
+  /** Latest command solved by the performer, replayed by the public actions. */
+  private autoGun = false;
+
   constructor(scenario: Scenario = sunsetSpearScenario) {
     this.scenario = scenario;
     this.reset();
@@ -397,6 +468,32 @@ export class CockpitEngine {
     this.threat = 0;
     this.ambience = [];
     this.ambienceTimer = 1.6;
+
+    /* v0.4 — the stage and the performer. The demo reel deliberately survives
+       a restart: "clear the game automatically" should not re-learn its own
+       routine every time it is shot down. */
+    this.waveIndex = 0;
+    this.waveInboundTimer = 0;
+    this.jammerEngaged = false;
+    this.autoRetryTimer = null;
+    this.autoGun = false;
+    this.roster = new Map();
+    this.rosterDown = new Map();
+    for (const unit of this.allHostileUnits()) {
+      const id = resolveEnemyId(unit);
+      this.roster.set(id, (this.roster.get(id) ?? 0) + 1);
+    }
+    resetAutoPilotMemory(this.autoMemory);
+  }
+
+  /** Every bandit the scenario can put in the air, initial wave included. */
+  private allHostileUnits() {
+    const waves = this.scenario.reinforcements ?? [];
+    return [...this.scenario.enemies, ...waves.flatMap((wave) => wave.units)];
+  }
+
+  getReinforcements(): readonly ScenarioWave[] {
+    return this.scenario.reinforcements ?? [];
   }
 
   launch(): void {
@@ -444,39 +541,24 @@ export class CockpitEngine {
   /* ------------------------------------------------------------------ */
 
   setInput(partial: Partial<ControlInput>): void {
-    this.inputTarget = {
-      pitch: clamp(partial.pitch ?? this.inputTarget.pitch, -1, 1),
-      roll: clamp(partial.roll ?? this.inputTarget.roll, -1, 1),
-      yaw: clamp(partial.yaw ?? this.inputTarget.yaw, -1, 1),
-    };
-    if (partial.pitch !== undefined && Math.abs(this.inputTarget.pitch) >= 0.3) {
-      this.attitudeSeen.pitch = true;
-    }
-    if (partial.roll !== undefined && Math.abs(this.inputTarget.roll) >= 0.3) {
-      this.attitudeSeen.roll = true;
-    }
-    if (this.attitudeSeen.pitch && this.attitudeSeen.roll) this.completeTutorial('attitude');
+    // The performer owns the stick while it is flying; a stray keypress must
+    // not fight it. `AUTO ACE` itself is switched from a separate action.
+    if (this.autoPilot) return;
+    this.applyInput(partial);
   }
 
   setThrottle(value: number): void {
-    const next = clamp(value, 0, 1);
-    this.pilotThrottle = next;
-    this.flight.throttle = next;
-    this.throttleAxis = 0;
-    this.throttleIdle = 0;
-    this.completeTutorial('throttle');
+    if (this.autoPilot) return;
+    this.applyThrottle(value);
   }
 
   adjustThrottle(delta: number): void {
-    const next = clamp(this.flight.throttle + delta, 0, 1);
-    this.pilotThrottle = next;
-    this.flight.throttle = next;
-    this.throttleAxis = 0;
-    this.throttleIdle = 0;
-    this.completeTutorial('throttle');
+    if (this.autoPilot) return;
+    this.applyThrottle(this.flight.throttle + delta);
   }
 
   setThrottleAxis(axis: number): void {
+    if (this.autoPilot) return;
     this.throttleAxis = clamp(axis, -1, 1);
     if (this.throttleAxis !== 0) {
       this.throttleIdle = 0;
@@ -596,6 +678,247 @@ export class CockpitEngine {
     this.tutorialDismissed = false;
     this.tutorialTimer = 0;
     this.tutorialDoneAt = null;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.4 AUTO ACE — one switch, the whole sortie                        */
+  /* ------------------------------------------------------------------ */
+
+  isAutoPilot(): boolean {
+    return this.autoPilot;
+  }
+
+  toggleAutoPilot(): boolean {
+    this.setAutoPilot(!this.autoPilot);
+    return this.autoPilot;
+  }
+
+  /**
+   * Hand the aircraft to the performer. Engaging it is deliberately enough to
+   * finish the game: from the briefing it launches, from the boot sequence it
+   * waits out the self-test, and if it is ever shot down it climbs back in and
+   * flies the sortie again. Disengaging hands the stick straight back.
+   */
+  setAutoPilot(enabled: boolean): void {
+    if (this.autoPilot === enabled) return;
+    this.autoPilot = enabled;
+    this.autoRetryTimer = null;
+    if (enabled) {
+      resetAutoPilotMemory(this.autoMemory, false);
+      this.autoMemory.mode = 'standby';
+      if (this.phase === 'idle') this.launch();
+      this.warn(
+        'system',
+        'caution',
+        'AUTO ACE ENGAGED',
+        '全自动皇牌模式接通 — 飞控接管，观赏机动展示',
+        3.4,
+      );
+      this.say(this.scenario.callsign, 'auto', 'AUTO ACE 接通。队长，把杆交给我，看一场表演。');
+    } else {
+      this.autoGun = false;
+      this.gunHeld = false;
+      this.cancelManeuvers();
+      this.warn('system', 'caution', 'MANUAL CONTROL', '全自动模式断开 — 操纵权已交还', 2.4);
+      this.say(this.scenario.callsign, 'auto', '收到，操纵权交还。');
+    }
+    this.emit({ type: 'auto-engage', enabled });
+  }
+
+  getAutoPilotMemory(): Readonly<AutoPilotMemory> {
+    return this.autoMemory;
+  }
+
+  /** Build the performer's view of the world. Called once per simulation tick. */
+  private buildAutoPilotWorld(dt: number): AutoPilotWorld {
+    const flight = this.flight;
+    const forward = forwardFromAngles(flight.yaw, flight.pitch);
+
+    const contacts: AutoPilotContact[] = [];
+    for (const entity of this.entities) {
+      if (!this.isLockable(entity)) continue;
+      const toTarget = sub(entity.position, flight.position);
+      const range = Math.sqrt(toTarget.x ** 2 + toTarget.y ** 2 + toTarget.z ** 2);
+      const angles = yawPitchFromDirection(toTarget);
+      contacts.push({
+        id: entity.id,
+        callsign: entity.label || entity.callsign,
+        kind: entity.kind === 'weakpoint' ? 'weakpoint' : 'fighter',
+        enemyId: entity.enemyId,
+        position: entity.position,
+        distance: range,
+        angle: angleBetween(forward, normalize(toTarget)) * RAD,
+        yawError: wrapRadians(angles.yaw - flight.yaw),
+        pitchError: angles.pitch - flight.pitch,
+        hp: entity.hp,
+        maxHp: entity.maxHp,
+        lockable: true,
+        priority: enemyPriority(entity),
+        selected: entity.id === this.selectedId,
+      });
+    }
+
+    const threats: AutoPilotThreat[] = [];
+    const right = rightFromYaw(flight.yaw);
+    for (const entity of this.entities) {
+      if (!entity.alive || entity.kind !== 'missile') continue;
+      if (entity.team !== 'hostile' || entity.missile?.targetId !== 'player') continue;
+      const toMissile = sub(entity.position, flight.position);
+      const range = Math.sqrt(toMissile.x ** 2 + toMissile.y ** 2 + toMissile.z ** 2);
+      // Signed bearing in the same convention as the control axes: positive
+      // means the missile sits off the LEFT wing, so `aimAt` can be handed the
+      // bearing directly to break away from it.
+      const along = toMissile.x * forward.x + toMissile.y * forward.y + toMissile.z * forward.z;
+      const lateral = toMissile.x * right.x + toMissile.y * right.y + toMissile.z * right.z;
+      const bearing = Math.atan2(-lateral, along) * RAD;
+      const closing = Math.max(
+        1,
+        (entity.missile?.speed ?? 660) + flight.speed * Math.cos(bearing / RAD),
+      );
+      threats.push({
+        id: entity.id,
+        distance: range,
+        bearing,
+        impactIn: range / closing,
+      });
+    }
+
+    return {
+      dt,
+      elapsed: this.elapsed,
+      phase: this.phase,
+      paused: this.paused,
+      position: flight.position,
+      yaw: flight.yaw,
+      pitch: flight.pitch,
+      roll: flight.roll,
+      rollRate: flight.rollRate,
+      speed: flight.speed,
+      altitude: flight.position.y,
+      gLoad: flight.gLoad,
+      hp: flight.hp,
+      maxHp: flight.maxHp,
+      throttle: flight.throttle,
+      activeManeuver: this.activeManeuver(),
+      activeProgress: this.scripted
+        ? clamp(this.scripted.time / MANEUVERS[this.scripted.id].duration, 0, 1)
+        : 0,
+      contacts,
+      threats,
+      selectedId: this.selectedId,
+      lock: {
+        state: this.getLockState().state,
+        progress: this.lockProgress,
+        targetId: this.selectedId,
+        distance: this.lockDistance,
+      },
+      weapons: {
+        selected: this.weapons.selected,
+        missiles: this.weapons.missiles,
+        gunAmmo: this.weapons.gunAmmo,
+        flares: this.weapons.flares,
+      },
+      jammed: this.jammerEngaged,
+      pendingHostiles: (this.scenario.reinforcements ?? []).length - this.waveIndex,
+      coreExposed: this.getWeakpoints().some(
+        (weakpoint) => weakpoint.weakpoint?.key === 'core' && weakpoint.weakpoint.targetable,
+      ),
+    };
+  }
+
+  /** Run the performer and apply its commands through the normal controls. */
+  private updateAutoPilot(dt: number): void {
+    if (!this.autoPilot) return;
+
+    // Being shot down is not the end of "clear the game automatically".
+    if (this.phase === 'failed') {
+      if (this.autoRetryTimer === null) {
+        this.autoRetryTimer = 3.2;
+        this.emit({ type: 'auto-retry' });
+      }
+      this.autoRetryTimer -= dt;
+      if (this.autoRetryTimer <= 0) {
+        this.autoRetryTimer = null;
+        this.launch();
+      }
+      return;
+    }
+    if (this.phase === 'complete') {
+      if (this.autoGun) {
+        this.autoGun = false;
+        this.gunHeld = false;
+      }
+      return;
+    }
+    if (this.phase === 'idle') {
+      this.launch();
+      return;
+    }
+
+    const world = this.buildAutoPilotWorld(dt);
+    const command = solveAutoPilot(world, this.autoMemory);
+
+    // Drain the performer's announcements into the radio and the event bus.
+    const playEvent = this.autoMemory.playEvent;
+    if (playEvent) {
+      this.autoMemory.playEvent = null;
+      this.emit({
+        type: 'auto-play',
+        maneuver: playEvent.maneuver,
+        playId: playEvent.playId,
+        demonstration: playEvent.demonstration,
+      });
+      this.completeTutorial('maneuver');
+    }
+    const announce = this.autoMemory.announce;
+    if (announce) {
+      this.autoMemory.announce = null;
+      this.addComms(this.scenario.callsign, 'auto', announce);
+    }
+
+    /* The stick. Written into the same target the keyboard writes into, so the
+       input shaping, the flight aids and the whole v0.2 handling model apply
+       exactly as they do to a human hand. */
+    this.applyInput({ pitch: command.pitch, roll: command.roll, yaw: command.yaw });
+    this.applyThrottle(command.throttle);
+
+    if (command.selectTarget && command.selectTarget !== this.selectedId) {
+      this.selectTarget(command.selectTarget);
+    }
+    if (command.selectWeapon && command.selectWeapon !== this.weapons.selected) {
+      this.selectWeapon(command.selectWeapon);
+    }
+    if (command.startManeuver) this.startManeuver(command.startManeuver);
+    if (command.endManeuver) this.endManeuver(command.endManeuver);
+    if (command.flare) this.flare();
+    if (command.fireMissile) this.fireMissile();
+
+    if (command.gun !== this.autoGun) {
+      this.autoGun = command.gun;
+      if (command.gun) this.startGun();
+      else this.stopGun();
+    }
+  }
+
+  /** Internal input path used by the performer — bypasses the manual lockout. */
+  private applyInput(partial: Partial<ControlInput>): void {
+    this.inputTarget = {
+      pitch: clamp(partial.pitch ?? this.inputTarget.pitch, -1, 1),
+      roll: clamp(partial.roll ?? this.inputTarget.roll, -1, 1),
+      yaw: clamp(partial.yaw ?? this.inputTarget.yaw, -1, 1),
+    };
+    if (Math.abs(this.inputTarget.pitch) >= 0.3) this.attitudeSeen.pitch = true;
+    if (Math.abs(this.inputTarget.roll) >= 0.3) this.attitudeSeen.roll = true;
+    if (this.attitudeSeen.pitch && this.attitudeSeen.roll) this.completeTutorial('attitude');
+  }
+
+  private applyThrottle(value: number): void {
+    const next = clamp(value, 0, 1);
+    this.pilotThrottle = next;
+    this.flight.throttle = next;
+    this.throttleAxis = 0;
+    this.throttleIdle = 0;
+    this.completeTutorial('throttle');
   }
 
   /** Instantly retargets every hostile missile onto the flares. */
@@ -820,6 +1143,10 @@ export class CockpitEngine {
     this.completionTimer = 0;
     this.elapsed = Math.max(this.elapsed, 62);
     this.kills = Math.max(this.kills, this.scenario.requiredKills);
+    // Jumping straight to the dreadnought means the waves before it already
+    // happened; without this the whole campaign arrives on top of the boss.
+    this.waveIndex = this.getReinforcements().length;
+    this.waveInboundTimer = 0;
     this.score = Math.max(this.score, 420);
     this.flight.hp = this.flight.maxHp;
     this.weapons.missiles = this.weapons.maxMissiles;
@@ -869,18 +1196,27 @@ export class CockpitEngine {
     if (this.phase === 'boot') {
       this.updateManeuver(step);
       this.updateThrottle(step);
+      this.updateAutoPilot(step);
       this.updateFlight(step);
       this.bootTimer -= step;
       if (this.bootTimer <= 0) this.beginCombat();
       return;
     }
 
-    if (this.phase === 'complete' || this.phase === 'failed') return;
+    if (this.phase === 'complete' || this.phase === 'failed') {
+      // The performer still gets a turn: it either banks the win or queues the
+      // retry that keeps "clear the game automatically" honest.
+      this.updateAutoPilot(step);
+      return;
+    }
 
     this.updateManeuver(step);
     this.updateThrottle(step);
+    this.updateAutoPilot(step);
     this.updateFlight(step);
     this.updateGun(step);
+    this.updateWaves(step);
+    this.updateJamming();
     this.updateLock(step);
     this.updateAI(step);
     this.updateWingman(step);
@@ -1168,7 +1504,10 @@ export class CockpitEngine {
     this.lockSteering = wrapRadians(desired.yaw - this.flight.yaw) * RAD;
     this.lockElevation = (desired.pitch - this.flight.pitch) * RAD;
     if (this.lockProgress < 1) {
-      const rate = this.lockInCone ? dt / LOCK_TIME : -(dt / LOCK_TIME) * 2.4;
+      // v0.4: a live jammer stretches the lock instead of blocking it, so the
+      // counter-play is "kill the jammer", not "wait it out".
+      const jamFactor = this.jammerEngaged ? 0.45 : 1;
+      const rate = this.lockInCone ? (dt / LOCK_TIME) * jamFactor : -(dt / LOCK_TIME) * 2.4;
       this.lockProgress = clamp(this.lockProgress + rate, 0, 1);
     } else if (angle <= 38 && dist <= 4800) {
       // Once acquired, keep the lock while the target stays roughly in front.
@@ -1248,9 +1587,9 @@ export class CockpitEngine {
       if (!entity.alive || !this.isLockable(entity)) continue;
       const toTarget = sub(entity.position, this.flight.position);
       const range = Math.sqrt(toTarget.x ** 2 + toTarget.y ** 2 + toTarget.z ** 2);
-      if (range > 1750) continue;
+      if (range > GUN_RANGE) continue;
       const angle = angleBetween(forward, normalize(toTarget)) * RAD;
-      if (angle > 5.5) continue;
+      if (angle > GUN_CONE_DEG) continue;
       const score = angle * 10 + range / 250;
       if (score < bestScore) {
         bestScore = score;
@@ -1260,70 +1599,116 @@ export class CockpitEngine {
     return best;
   }
 
+  /**
+   * v0.4 bandit AI. v0.3 gave every hostile the same two behaviours — fly at
+   * the player and lob a missile when roughly nose-on. v0.4 reads the airframe
+   * profile instead, so a scout slashes past, a heavy sits still and hoses the
+   * player with its gun, a jammer keeps its distance behind the fight and a
+   * commander actually tries to stay out of the player's forward hemisphere.
+   */
   private updateAI(dt: number): void {
     const player = this.flight.position;
+    const combat = this.phase === 'dogfight' || this.phase === 'boss';
+
     for (const entity of this.entities) {
       if (!entity.alive || entity.kind !== 'fighter' || !entity.ai) continue;
       const ai = entity.ai;
+      const profile = enemyProfile(entity.enemyId);
       ai.cooldown -= dt;
       ai.evadeTimer = Math.max(0, ai.evadeTimer - dt);
+      ai.gunCooldown = Math.max(0, ai.gunCooldown - dt);
+      ai.gunBurst = Math.max(0, ai.gunBurst - dt);
 
       const toPlayer = sub(player, entity.position);
       const dist = Math.sqrt(toPlayer.x ** 2 + toPlayer.y ** 2 + toPlayer.z ** 2);
       const forward = forwardFromAngles(entity.yaw, entity.pitch);
       const angle = angleBetween(forward, normalize(toPlayer)) * RAD;
 
-      if (dist < 900) {
+      // Break off when the player is about to fly through them, scaled by how
+      // willing this airframe is to trade a firing position for survival.
+      const breakRange = profile?.id === 'heavy' ? 620 : profile?.jammer ? 1500 : 900;
+      if (dist < breakRange) {
         ai.mode = 'evade';
-        ai.evadeTimer = Math.max(ai.evadeTimer, 1.7);
+        ai.evadeTimer = Math.max(ai.evadeTimer, profile?.jammer ? 2.6 : 1.7);
       }
-      if (this.selectedId === entity.id && ai.evadeTimer <= 0 && Math.random() < 0.006) {
+      const nerve = profile?.evadeBias ?? 0.3;
+      if (
+        this.selectedId === entity.id &&
+        ai.evadeTimer <= 0 &&
+        Math.random() < 0.01 * nerve
+      ) {
         ai.mode = 'evade';
-        ai.evadeTimer = randomRange(0.9, 1.7);
+        ai.evadeTimer = randomRange(0.9, 1.9);
       }
       if (ai.mode === 'evade' && ai.evadeTimer <= 0) ai.mode = 'engage';
 
       if (ai.mode === 'engage') {
         const desired = yawPitchFromDirection(toPlayer);
         const yawDelta = wrapRadians(desired.yaw - entity.yaw);
-        const maxYaw = (entity.variant === 'ace' ? 1.15 : 0.82) * dt;
+        const maxYaw = (profile?.turnRate ?? 0.9) * dt;
         entity.yaw = wrapRadians(entity.yaw + clamp(yawDelta, -maxYaw, maxYaw));
         entity.pitch = clamp(
           entity.pitch + clamp(desired.pitch - entity.pitch, -0.5 * dt, 0.5 * dt),
           -1.1,
           1.1,
         );
-        entity.roll = damp(
-          entity.roll,
-          clamp(-yawDelta * 2.2, -1.05, 1.05),
-          3.2,
-          dt,
-        );
-        if (
-          ai.cooldown <= 0 &&
-          dist < 2900 &&
-          dist > 650 &&
-          angle < 24 &&
-          (this.phase === 'dogfight' || this.phase === 'boss')
-        ) {
-          this.fireEnemyMissile(entity);
-          ai.cooldown = entity.variant === 'ace' ? randomRange(4.2, 6.4) : randomRange(6, 9);
+        entity.roll = damp(entity.roll, clamp(-yawDelta * 2.2, -1.05, 1.05), 3.2, dt);
+
+        // --- missiles -------------------------------------------------
+        const fit = profile?.missile;
+        if (fit && combat && ai.cooldown <= 0 && dist < fit.max && dist > fit.min && angle < fit.cone) {
+          this.fireEnemyMissile(entity, fit.speed);
+          ai.cooldown = randomRange(...fit.cooldown);
+        }
+
+        // --- guns -----------------------------------------------------
+        // Bursts are telegraphed by tracers before they hurt, and only ever
+        // land while the player stays parked in front of the muzzle.
+        const gun = profile?.gun;
+        if (gun && combat) {
+          const aligned = angle < gun.cone && dist < gun.range && dist > 180;
+          if (ai.gunBurst > 0) {
+            if (!aligned) {
+              ai.gunBurst = 0;
+            } else {
+              this.fireEnemyGun(entity, gun.dps, dt);
+            }
+          } else if (ai.gunCooldown <= 0 && aligned) {
+            ai.gunBurst = gun.burst;
+            ai.burstHits = 0;
+            ai.gunCooldown = randomRange(...gun.interval);
+            this.emit({ type: 'enemy-gun', id: entity.id });
+            this.fireEnemyGun(entity, gun.dps, dt);
+          }
         }
       } else {
         entity.roll = damp(entity.roll, Math.sin(this.elapsed * 3 + ai.seed) * 0.7, 2.5, dt);
         entity.pitch = clamp(entity.pitch + Math.sin(this.elapsed + ai.seed) * 0.14 * dt, -0.9, 0.9);
       }
 
+      // Standoff discipline: scouts and drones press, jammers and heavies hang
+      // back, everyone else holds a working range.
+      const standoff = profile?.standoff ?? 1800;
+      const closing = dist > standoff * 1.25 ? 1.12 : dist < standoff * 0.6 ? 0.86 : 1;
       const heading = forwardFromAngles(entity.yaw, entity.pitch);
-      entity.position = add(entity.position, scale(heading, entity.speed * dt));
+      entity.position = add(entity.position, scale(heading, entity.speed * closing * dt));
       entity.position.y = clamp(entity.position.y, 1800, 11800);
-      if (dist > 5200) {
-        entity.ai.mode = 'engage';
-      }
+      if (dist > 5200) ai.mode = 'engage';
     }
   }
 
-  private fireEnemyMissile(enemy: SimEntity): void {
+  /** One tick of a hostile gun burst: a tracer plus whatever it actually hits. */
+  private fireEnemyGun(enemy: SimEntity, dps: number, dt: number): void {
+    this.spawnEffect('tracer', enemy.position, {
+      to: this.flight.position,
+      scale: 1,
+      color: 'red',
+      life: 0.11,
+    });
+    if (Math.random() < 0.55) this.damagePlayer(dps * dt * 1.6, enemy.position);
+  }
+
+  private fireEnemyMissile(enemy: SimEntity, speed = 660): void {
     const direction = normalize(sub(this.flight.position, enemy.position));
     const angles = yawPitchFromDirection(direction);
     const missile = this.makeEntity({
@@ -1333,7 +1718,7 @@ export class CockpitEngine {
       position: add(enemy.position, scale(direction, 16)),
       yaw: angles.yaw,
       pitch: angles.pitch,
-      speed: 660,
+      speed,
       hp: 1,
       maxHp: 1,
       radius: 3,
@@ -1341,7 +1726,7 @@ export class CockpitEngine {
     });
     missile.missile = {
       targetId: 'player',
-      speed: 660,
+      speed,
       life: 9,
       maxLife: 9,
       owner: 'hostile',
@@ -1372,12 +1757,12 @@ export class CockpitEngine {
     wingman.speed = this.flight.speed;
     wingman.hp = wingman.maxHp;
 
-    wingman.ai = wingman.ai ?? {
+    wingman.ai = wingman.ai ?? createAIState({
       mode: 'formation',
       cooldown: 4,
-      evadeTimer: 0,
       seed: 1,
-    };
+      gunCooldown: 99,
+    });
     wingman.ai.cooldown -= dt;
     if (
       wingman.ai.cooldown <= 0 &&
@@ -1560,7 +1945,15 @@ export class CockpitEngine {
       const droneCount = this.entities.filter(
         (entity) => entity.alive && entity.kind === 'fighter' && entity.team === 'hostile',
       ).length;
-      if (droneCount < 4) this.spawnDrone(boss);
+      // v0.4 gave the drones guns, so the swarm cap came down with it. The swarm
+      // also stops once the shields are gone: a reactor run is a long, straight,
+      // predictable pass, and having three armed drones sawing at the airframe
+      // through it turned the endgame into a war of attrition the player could
+      // not win by flying well. The escorts belong to the shield phase.
+      const shieldsUp = this.getWeakpoints().some(
+        (weakpoint) => weakpoint.weakpoint?.key !== 'core' && weakpoint.alive,
+      );
+      if (droneCount < 3 && shieldsUp) this.spawnDrone(boss);
     }
   }
 
@@ -1570,7 +1963,20 @@ export class CockpitEngine {
       return;
     }
     if (this.phase === 'dogfight') {
-      if (this.kills >= this.scenario.requiredKills || this.elapsed >= this.scenario.bossTriggerAt) {
+      // v0.4: the boss arrives once the required kills are in, once the clock
+      // runs out, or once every wave has been released and the sky is clear —
+      // whichever the sortie reaches first. The last clause stops a slow player
+      // from being stranded with nothing left to shoot, but it needs the
+      // scenario to actually field bandits: an empty stage is a test rig, not a
+      // cleared sky.
+      const staged = this.allHostileUnits().length > 0;
+      const wavesLeft = this.waveIndex < this.getReinforcements().length;
+      const swept = staged && !wavesLeft && this.hostileCount() === 0;
+      if (
+        this.kills >= this.scenario.requiredKills ||
+        this.elapsed >= this.scenario.bossTriggerAt ||
+        swept
+      ) {
         this.beginBossIntro();
       }
       return;
@@ -1588,6 +1994,13 @@ export class CockpitEngine {
     this.weapons.missiles = this.weapons.maxMissiles;
     this.weapons.flares = this.weapons.maxFlares;
     this.weapons.gunAmmo = this.weapons.gunMax;
+    // v0.4 tripled the number of bandits waiting before the dreadnought, and
+    // gave them guns. Without a field repair the second half of the sortie was
+    // decided before it started; this is the arcade concession that keeps the
+    // stage winnable for a human and for AUTO ACE alike.
+    const patched = Math.min(this.flight.maxHp, this.flight.hp + RESUPPLY_REPAIR);
+    const repaired = patched - this.flight.hp;
+    this.flight.hp = patched;
     this.emit({ type: 'resupply' });
     this.spawnBoss();
     this.say(
@@ -1596,6 +2009,13 @@ export class CockpitEngine {
       '警告！巨型空中目标进入战区 — 识别为 LEVIATHAN。全员规避其弹幕。',
     );
     this.say(this.scenario.wingmanCallsign, 'wingman', '那东西比整座城市还大……队长，我跟着你。');
+    if (repaired >= 4) {
+      this.say(
+        this.scenario.awacsCallsign,
+        'awacs',
+        `补给机完成空中加油与应急修补，机体恢复 ${Math.round(repaired)}%。`,
+      );
+    }
     this.warn('boss', 'critical', 'MASSIVE CONTACT', '战争巨兽出现 — 摧毁护盾节点', 4.5);
     this.emit({ type: 'boss-intro' });
     const shield = this.entities.find(
@@ -1611,8 +2031,10 @@ export class CockpitEngine {
     this.score += 2000 + Math.round(accuracy * 800) + timeBonus;
     this.stats.score = this.score;
     this.stats.elapsed = Math.floor(this.elapsed);
+    // v0.4 put eight bandits, a swarm of drones and a dreadnought on the stage
+    // instead of three fighters, so the bar for an S moved with the pot.
     this.stats.rank =
-      this.score >= 5200 ? 'S' : this.score >= 4100 ? 'A' : this.score >= 2900 ? 'B' : 'C';
+      this.score >= 7200 ? 'S' : this.score >= 5800 ? 'A' : this.score >= 4200 ? 'B' : 'C';
     this.phase = 'complete';
     this.gunHeld = false;
     this.gunFiring = false;
@@ -1661,6 +2083,7 @@ export class CockpitEngine {
     roll?: number;
     label?: string;
     variant?: SimEntity['variant'];
+    enemyId?: EnemyId | null;
   }): SimEntity {
     this.idCounter += 1;
     return {
@@ -1679,12 +2102,54 @@ export class CockpitEngine {
       radius: options.radius,
       alive: true,
       variant: options.variant ?? 'standard',
+      enemyId: options.enemyId ?? null,
       ai: null,
       missile: null,
       weakpoint: null,
       life: 0,
       maxLife: 0,
     };
+  }
+
+  /**
+   * Put one scenario bandit in the air. The airframe profile decides hp, speed
+   * and role; the scenario only has to say where it starts.
+   */
+  private spawnBandit(
+    enemy: Scenario['enemies'][number],
+    origin: Vec3,
+    forward: Vec3,
+    right: Vec3,
+  ): SimEntity {
+    const profile = ENEMIES[resolveEnemyId(enemy)];
+    const position = add(
+      add(origin, scale(forward, enemy.distance)),
+      add(scale(right, enemy.side), { x: 0, y: enemy.vertical, z: 0 }),
+    );
+    const angles = yawPitchFromDirection(sub(origin, position));
+    const entity = this.makeEntity({
+      kind: 'fighter',
+      team: 'hostile',
+      callsign: enemy.callsign,
+      label: enemy.callsign,
+      position,
+      yaw: angles.yaw,
+      pitch: angles.pitch,
+      speed: profile.speed,
+      hp: profile.hp,
+      maxHp: profile.hp,
+      radius: profile.radius,
+      variant: profile.variant,
+      enemyId: profile.id,
+    });
+    entity.ai = createAIState({
+      mode: 'engage',
+      cooldown: profile.missile ? randomRange(...profile.missile.cooldown) : randomRange(4, 8),
+      gunCooldown: profile.gun ? randomRange(...profile.gun.interval) : 99,
+      seed: randomRange(0, 10),
+    });
+    this.entities.push(entity);
+    return entity;
   }
 
   private spawnWingman(): void {
@@ -1709,7 +2174,7 @@ export class CockpitEngine {
       maxHp: 100,
       radius: 8,
     });
-    wingman.ai = { mode: 'formation', cooldown: 4.5, evadeTimer: 0, seed: 2 };
+    wingman.ai = createAIState({ mode: 'formation', cooldown: 4.5, seed: 2, gunCooldown: 99 });
     this.entities.push(wingman);
     this.wingmanId = wingman.id;
   }
@@ -1718,36 +2183,97 @@ export class CockpitEngine {
     const forward = forwardFromAngles(this.flight.yaw, 0);
     const right = rightFromYaw(this.flight.yaw);
     for (const enemy of this.scenario.enemies) {
-      const position = add(
-        add(this.flight.position, scale(forward, enemy.distance)),
-        add(scale(right, enemy.side), { x: 0, y: enemy.vertical, z: 0 }),
-      );
-      const direction = sub(this.flight.position, position);
-      const angles = yawPitchFromDirection(direction);
-      const entity = this.makeEntity({
-        kind: 'fighter',
-        team: 'hostile',
-        callsign: enemy.callsign,
-        position,
-        yaw: angles.yaw,
-        pitch: angles.pitch,
-        speed: enemy.variant === 'ace' ? 218 : 194,
-        hp: enemy.variant === 'ace' ? 150 : 100,
-        maxHp: enemy.variant === 'ace' ? 150 : 100,
-        radius: 9,
-        variant: enemy.variant ?? 'standard',
-      });
-      entity.ai = {
-        mode: 'engage',
-        cooldown: randomRange(4.5, 8),
-        evadeTimer: 0,
-        seed: randomRange(0, 10),
-      };
-      this.entities.push(entity);
+      this.spawnBandit(enemy, this.flight.position, forward, right);
+    }
+  }
+
+  /**
+   * v0.4 wave director. The opening formation is wave one; every entry in
+   * `scenario.reinforcements` is released once the fighting has burned down,
+   * on a kill count or a clock — whichever the mission reaches first.
+   */
+  private updateWaves(dt: number): void {
+    this.waveInboundTimer = Math.max(0, this.waveInboundTimer - dt);
+    const waves = this.getReinforcements();
+    if (this.waveIndex >= waves.length) return;
+    if (this.phase !== 'dogfight' && this.phase !== 'boss') return;
+
+    const wave = waves[this.waveIndex];
+    const gate = {
+      kills: this.kills,
+      elapsed: this.elapsed,
+      hostiles: this.hostileCount(),
+      pending: waves.length - this.waveIndex,
+      phase: this.phase,
+    };
+    if (!waveReady(wave, gate)) return;
+
+    this.waveIndex += 1;
+    this.waveInboundTimer = 3.4;
+    const forward = forwardFromAngles(this.flight.yaw, 0);
+    const right = rightFromYaw(this.flight.yaw);
+    for (const unit of wave.units) {
+      this.spawnBandit(unit, this.flight.position, forward, right);
+    }
+    // Reinforcements arrive with a rearm. v0.4 puts three times as many bandits
+    // in the air as v0.3 did, and eight missiles is not a sortie's worth of
+    // eight-plus bandits — a player who spends them on the vanguard would face
+    // the commander's flight with an empty rail and a gun. Tying the resupply to
+    // the wave is also the clearest tactical reading: the wave is the beat.
+    this.weapons.missiles = this.weapons.maxMissiles;
+    this.weapons.flares = this.weapons.maxFlares;
+    this.emit({ type: 'resupply' });
+    const text = waveBriefing(wave, wave.units);
+    this.say(this.scenario.awacsCallsign, 'awacs', text);
+    this.warn('system', 'warning', wave.code, `${wave.labelZh} — ${wave.units.length} 架进入战区`, 3.2);
+    this.emit({
+      type: 'wave-inbound',
+      code: wave.code,
+      labelZh: wave.labelZh,
+      units: wave.units.length,
+    });
+  }
+
+  private hostileCount(): number {
+    let count = 0;
+    for (const entity of this.entities) {
+      if (entity.alive && entity.kind === 'fighter' && entity.team === 'hostile') count += 1;
+    }
+    return count;
+  }
+
+  private aliveJammers(): SimEntity[] {
+    return this.entities.filter(
+      (entity) =>
+        entity.alive &&
+        entity.kind === 'fighter' &&
+        entity.team === 'hostile' &&
+        enemyProfile(entity.enemyId)?.jammer === true,
+    );
+  }
+
+  /**
+   * A live jammer inside its working radius halves the fire-control solution.
+   * It is deliberately a rate penalty, not a lock-out: the player can still
+   * fight, but the smart play is to kill the jammer first — and the autopilot
+   * does exactly that.
+   */
+  private updateJamming(): void {
+    const active = this.aliveJammers().some(
+      (jammer) => distance(jammer.position, this.flight.position) < 4600,
+    );
+    if (active === this.jammerEngaged) return;
+    this.jammerEngaged = active;
+    this.emit({ type: 'jammer-active', engaged: active });
+    if (active) {
+      this.warn('system', 'caution', 'ECM ACTIVE', '敌方干扰机在压制火控 — 优先击落', 3.2);
+    } else {
+      this.warn('system', 'caution', 'ECM CLEAR', '干扰消失 — 火控恢复正常', 2.2);
     }
   }
 
   private spawnDrone(boss: SimEntity): void {
+    const profile = ENEMIES.drone;
     const offset = {
       x: randomRange(-180, 180),
       y: randomRange(-40, 50),
@@ -1763,18 +2289,19 @@ export class CockpitEngine {
       position,
       yaw: angles.yaw,
       pitch: angles.pitch,
-      speed: 205,
-      hp: 70,
-      maxHp: 70,
-      radius: 8,
+      speed: profile.speed,
+      hp: profile.hp,
+      maxHp: profile.hp,
+      radius: profile.radius,
       variant: 'standard',
+      enemyId: 'drone',
     });
-    drone.ai = {
+    drone.ai = createAIState({
       mode: 'engage',
       cooldown: randomRange(1, 2.5),
-      evadeTimer: 0,
+      gunCooldown: randomRange(3, 6),
       seed: randomRange(0, 10),
-    };
+    });
     this.entities.push(drone);
     this.say(this.scenario.awacsCallsign, 'awacs', 'LEVIATHAN 放出无人机群，注意近距离缠斗。');
   }
@@ -1803,7 +2330,7 @@ export class CockpitEngine {
       radius: 260,
       variant: 'dreadnought',
     });
-    boss.ai = { mode: 'drift', cooldown: 0, evadeTimer: 0, seed: 7 };
+    boss.ai = createAIState({ mode: 'drift', cooldown: 0, seed: 7, gunCooldown: 99 });
     this.entities.push(boss);
     this.bossId = boss.id;
 
@@ -1908,8 +2435,12 @@ export class CockpitEngine {
     if (minedByPlayer) {
       this.kills += 1;
       this.stats.kills += 1;
-      const points = target.variant === 'ace' ? 180 : 100;
+      const profile = enemyProfile(target.enemyId);
+      const points = profile?.points ?? (target.variant === 'ace' ? 180 : 100);
       this.score += points;
+      if (target.enemyId) {
+        this.rosterDown.set(target.enemyId, (this.rosterDown.get(target.enemyId) ?? 0) + 1);
+      }
       this.registerKill(target, points, false);
       this.emit({
         type: 'kill',
@@ -1919,11 +2450,7 @@ export class CockpitEngine {
         points,
         ace: target.variant === 'ace',
       });
-      const lines =
-        target.variant === 'ace'
-          ? ['王牌掉了！这就是 CIRRUS 的答案。', 'VESPER ACE 被击落，敌编队正在崩溃。']
-          : ['VESPER 被击落，干得漂亮。', '确认击落，雷达上少了一个光点。'];
-      this.say(this.scenario.wingmanCallsign, 'wingman', lines[Math.floor(Math.random() * lines.length)] ?? lines[0]);
+      this.say(this.scenario.wingmanCallsign, 'wingman', this.killLine(profile));
     }
     if (this.selectedId === target.id) {
       this.selectedId = null;
@@ -2001,6 +2528,16 @@ export class CockpitEngine {
     }
   }
 
+  /**
+   * The wingman reacts to *what* went down. v0.4 has seven airframe classes, so
+   * "VESPER 被击落" for all of them wastes the best narrative beat in the game.
+   */
+  private killLine(profile: EnemyProfile | null): string {
+    const lines = profile ? KILL_LINES[profile.id] : undefined;
+    const pool = lines ?? KILL_LINES.interceptor;
+    return pool[Math.floor(Math.random() * pool.length)] ?? pool[0];
+  }
+
   private damagePlayer(amount: number, from: Vec3 | null = null): void {
     if (this.phase === 'complete' || this.phase === 'failed') return;
     this.flight.hp = Math.max(0, this.flight.hp - amount);
@@ -2010,7 +2547,7 @@ export class CockpitEngine {
       'damage',
       amount >= 10 ? 'critical' : 'warning',
       'HULL DAMAGE',
-      `结构损伤 -${amount}%`,
+      `结构损伤 -${amount.toFixed(0)}%`,
       1.7,
       bearing,
     );
@@ -2429,6 +2966,94 @@ export class CockpitEngine {
       steering: targetable ? this.lockSteering : 0,
       elevation: targetable ? this.lockElevation : 0,
       assisted: targetable && steeringAssist,
+      jammed: targetable && this.jammerEngaged,
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.4 stage readouts                                                 */
+  /* ------------------------------------------------------------------ */
+
+  private buildRoster(): RosterEntry[] {
+    const entries: RosterEntry[] = [];
+    for (const [id, total] of this.roster) {
+      const profile = ENEMIES[id];
+      entries.push({
+        enemyId: id,
+        code: profile.code,
+        labelZh: profile.labelZh,
+        labelEn: profile.labelEn,
+        total,
+        alive: this.entities.filter(
+          (entity) => entity.alive && entity.kind === 'fighter' && entity.enemyId === id,
+        ).length,
+        down: this.rosterDown.get(id) ?? 0,
+      });
+    }
+    // Squadrons read best in the order the mission meets them.
+    return entries.sort((a, b) => b.total - a.total || a.code.localeCompare(b.code));
+  }
+
+  private buildWaveHud(): WaveHud {
+    const waves = this.getReinforcements();
+    const total = waves.length + 1;
+    // `waveIndex` counts *released* reinforcements, so the wave on stage is the
+    // previous entry — index 0 is the opening formation, which has no
+    // `ScenarioWave` of its own. Reading `waves[waveIndex]` here is the obvious
+    // mistake and it labels the tracker with the wave that has not arrived yet.
+    const current = this.waveIndex > 0 ? waves[this.waveIndex - 1] : undefined;
+    const next = this.waveIndex < waves.length ? waves[this.waveIndex] : undefined;
+    const nextIn = next
+      ? Math.max(0, Math.min(next.atTime - this.elapsed, next.atKills - this.kills))
+      : null;
+    return {
+      index: this.waveIndex + 1,
+      total,
+      code: current?.code ?? 'WAVE 1',
+      labelEn: current?.labelEn ?? 'VESPER VANGUARD',
+      labelZh: current?.labelZh ?? '维斯珀 先锋',
+      nextIn: this.phase === 'dogfight' && nextIn !== null ? nextIn : null,
+      inbound: this.waveInboundTimer > 0,
+      hostiles: this.hostileCount(),
+      roster: this.buildRoster(),
+    };
+  }
+
+  private buildAutoPilotHud(): AutoPilotHud {
+    const memory = this.autoMemory;
+    const label = AUTO_MODE_LABEL[memory.mode];
+    const shown = autoPilotShown(memory);
+    const scripted = this.scripted;
+    const progress = scripted
+      ? clamp(scripted.time / MANEUVERS[scripted.id].duration, 0, 1)
+      : 0;
+    return {
+      engaged: this.autoPilot,
+      mode: memory.mode,
+      code: this.autoPilot ? label.code : 'MAN',
+      labelEn: this.autoPilot ? label.en : 'MANUAL',
+      labelZh: this.autoPilot ? label.zh : '手动',
+      callout: this.autoPilot ? memory.callout || label.zh : '',
+      progress: this.autoPilot ? progress : 0,
+      demonstrated: shown.length,
+      total: SHOWCASE_ORDER.length,
+      plays: memory.plays,
+      condition: autoPilotCondition({
+        hp: this.flight.hp,
+        maxHp: this.flight.maxHp,
+        missiles: this.weapons.missiles,
+        gunAmmo: this.weapons.gunAmmo,
+        threats: this.entities.filter(
+          (entity) =>
+            entity.alive &&
+            entity.kind === 'missile' &&
+            entity.team === 'hostile' &&
+            entity.missile?.targetId === 'player',
+        ).length,
+      }),
+      targetCallsign: this.getEntity(this.selectedId)?.label ?? null,
+      retryIn: this.autoPilot && this.autoRetryTimer !== null ? Math.max(0, this.autoRetryTimer) : null,
+      shown,
     };
   }
 
@@ -2558,6 +3183,7 @@ export class CockpitEngine {
         kind: entity.kind === 'weakpoint' ? 'weakpoint' : entity.kind === 'wingman' ? 'wingman' : 'fighter',
         team: entity.team,
         variant: entity.variant,
+        enemyId: entity.enemyId,
         distance: dist,
         hp: entity.hp,
         maxHp: entity.maxHp,
@@ -2566,6 +3192,7 @@ export class CockpitEngine {
         locked: selected && lock.state === 'locked',
         lockProgress: selected ? lock.progress : 0,
         lockable: this.isLockable(entity),
+        priority: enemyPriority(entity),
         screen: projection,
       });
     }
@@ -2728,6 +3355,8 @@ export class CockpitEngine {
         this.phase === 'dogfight' || this.phase === 'boss-intro' || this.phase === 'boss',
       ),
       combat: this.buildCombatFeedback(),
+      wave: this.buildWaveHud(),
+      auto: this.buildAutoPilotHud(),
       mission: {
         kills: this.kills,
         requiredKills: this.scenario.requiredKills,

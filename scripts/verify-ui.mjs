@@ -200,10 +200,97 @@ try {
   console.log('debrief phase', await page.evaluate(() => window.__THEVE__?.phase()));
   await shot('07-debrief-1920');
 
+  /* ------------------------------------------------------------------ */
+  /* v0.4 — the wave stage and AUTO ACE                                  */
+  /* ------------------------------------------------------------------ */
+  // Reload the cockpit from scratch. The sortie above already ended, and a
+  // hash-only navigation would leave the finished mission — and its debrief —
+  // on screen for every v0.4 shot.
+  await page.goto(target, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(500);
+  await openCockpit();
+  await shot('17-auto-ace-briefing-1920');
+
+  // One key. No other input from here on.
+  await page.evaluate(() => window.__THEVE__?.autoAce(true));
+  await page.waitForTimeout(3400);
+  const engaged = await page.evaluate(() => window.__THEVE__?.snapshot().auto.engaged);
+  console.log('auto ace engaged:', engaged);
+  await shot('18-auto-ace-engage-1920');
+
+  /**
+   * Advance the simulation headlessly instead of waiting on rAF. It keeps the
+   * screenshots deterministic and lets one run reach a wave change and a
+   * showcase manoeuvre inside a few seconds of wall clock.
+   */
+  const waveShot = await page.evaluate(() => {
+    const api = window.__THEVE__;
+    if (!api) return null;
+    for (let index = 0; index < 600; index += 1) {
+      const snapshot = api.step(0.08);
+      // Stop at the first reinforcement, not the last: the showcase search
+      // below needs a live mission to find a quiet moment in.
+      if (snapshot.wave.inbound && snapshot.wave.index >= 2) {
+        return { code: snapshot.wave.code, hostiles: snapshot.wave.hostiles, at: snapshot.elapsed };
+      }
+    }
+    return null;
+  });
+  await page.waitForTimeout(500);
+  await shot('19-wave-inbound-1920');
+  console.log('wave inbound captured:', JSON.stringify(waveShot));
+
+  const showcase = await page.evaluate(() => {
+    const api = window.__THEVE__;
+    if (!api) return null;
+    // No bail-out on `failed`: AUTO ACE relaunches itself after a shoot-down, so
+    // the next attempt is another chance at a quiet moment. Only a mission
+    // complete ends the search.
+    for (let index = 0; index < 4000; index += 1) {
+      const snapshot = api.step(0.05);
+      if (
+        snapshot.auto.mode === 'showcase' &&
+        snapshot.auto.progress > 0.2 &&
+        snapshot.auto.progress < 0.85
+      ) {
+        return { callout: snapshot.auto.callout, code: snapshot.auto.code, at: snapshot.elapsed };
+      }
+      if (snapshot.phase === 'complete') break;
+    }
+    return null;
+  });
+  await page.waitForTimeout(220);
+  await shot('20-auto-ace-showcase-1920');
+  console.log('showcase captured:', JSON.stringify(showcase));
+
+  const autoReport = await page.evaluate(() => {
+    const snapshot = window.__THEVE__?.snapshot();
+    if (!snapshot) return null;
+    return {
+      phase: snapshot.phase,
+      mode: snapshot.auto.mode,
+      demonstrated: snapshot.auto.demonstrated,
+      plays: snapshot.auto.plays,
+      kills: snapshot.mission.kills,
+      hostiles: snapshot.wave.hostiles,
+      roster: snapshot.wave.roster.map((entry) => `${entry.code}:${entry.down}/${entry.total}`),
+      score: snapshot.mission.score,
+    };
+  });
+  console.log('auto ace progress:', JSON.stringify(autoReport));
+  await shot('21-auto-ace-rail-1920');
+
   await page.goto(`${target}#/systems`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.systems');
   await page.waitForTimeout(900);
   await shot('08-systems-1920', { fullPage: true });
+
+  // v0.4 codex section: the threat database and the AUTO ACE card.
+  const stageSection = await page.$('#systems-04b');
+  if (stageSection) {
+    await stageSection.screenshot({ path: resolve(outDir, '22-systems-stage-1920.png') });
+    console.log('saved 22-systems-stage-1920');
+  }
 
   await page.setViewportSize({ width: 1366, height: 768 });
   await openCockpit();

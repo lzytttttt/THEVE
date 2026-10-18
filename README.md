@@ -9,7 +9,10 @@
 THEVE // TACS-8 把电影化空战的第一人称座舱拆解成一套 React + TypeScript 组件库：
 近黑金属、切角与磷光刻度构成的 HUD，three.js 绘制的黄昏平流层与战争巨兽，
 以及全部由 WebAudio 实时合成的配乐、音效与打击反馈。Showcase 里你可以真正坐进 LUMEN 1 的座舱，
-锁定 VESPER 编队，穿过弹幕，把 LEVIATHAN 的护盾节点逐个摘下来。
+迎击分三波进场的 VESPER 编队，穿过弹幕，把 LEVIATHAN 的护盾节点逐个摘下来。
+
+不想自己飞的时候，按 **`G`** 开启 **全自动皇牌模式（AUTO ACE）**：飞控接管，
+自己升空、自己选目标、在最合适的时机做眼镜蛇、库尔比特与殷麦曼，把整场任务打完。
 
 所有美术、机体、巨兽、文案与声音都是原创 / 程序化生成；本项目不使用任何官方素材。
 
@@ -46,14 +49,47 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 ## 体验流程
 
 1. **ATTRACT / 开场** — 落日云海、巨兽剪影、任务简报卡与电影化标题。
-2. **BRIEFING / 任务简报** — 目标、载具、威胁档案与操作速查。
+2. **BRIEFING / 任务简报** — 目标、载具、威胁档案与操作速查；右侧有「全自动皇牌模式」按钮。
 3. **BOOT / 航电自检** — 2.8 秒冷启动序列，可跳过。
 4. **FIRST FLIGHT CHECK / 简要操作说明** — 进入任务后左下角出现的 7 项检查单，会随着你真的做出动作逐条打勾并自动收起。
-5. **DOGFIGHT / 制空** — 迎击 VESPER 编队；锁定、发射、热焰弹规避，用七种战斗机机动抢位。
-6. **LEVIATHAN / 战争巨兽** — 击落 2 架敌机后触发；摧毁两具护盾节点，再攻击暴露的反应堆核心。
+5. **DOGFIGHT / 制空 · 三波** — 先锋（截击机 + 侦察机）→ 主队（重装机 + 王牌）→ 指挥编队（指挥机 + 电子战机）。
+   每波进场都会补给弹药，AWACS 会同时报出机型编成与应对重点。
+6. **LEVIATHAN / 战争巨兽** — 清空编队后触发；摧毁两具护盾节点，再攻击暴露的反应堆核心。
+   护盾还在时它会持续放出带机炮的无人机，护盾一掉就停止。
 7. **DEBRIEF / 结算** — 评分 S / A / B / C、命中率、战损、任务时间与最佳评级（localStorage）。
 
 任务失败后可直接重试；暂停菜单提供画质、反转俯仰、辅助驾驶逐项开关、音量与静音设置。
+
+---
+
+## 全自动皇牌模式（v0.4）
+
+按 **`G`**（或简报页 / 控制台的按钮）一键开启。它**不是外挂**：
+每一帧它写入的都是和你按键时完全相同的俯仰 / 滚转 / 偏航、油门、武器选择与扳机，
+走同一套飞行模型、同一份弹药、同一个评分与同一个结算。
+
+它做了三件事：
+
+| 层 | 行为 |
+| --- | --- |
+| 飞行 | 坡度转弯 + 比例控制；轨道限循环检测（机头偏出 58° 超过 1.8 秒就拉直重新进入攻击航线）；最低攻击距离 |
+| 战术 | 优先清护航再打巨兽；先打干扰机；导弹来了先放热焰弹，超机动只留给热焰弹解决不了的那 1.5 秒；被击落 3 秒后重新升空 |
+| 演出 | 七种战斗机机动各绑定一个可读的战术情境，另外维护一份「展示清单」：天空安静时它会主动补上你还没看过的动作，并在电台里报出招式名 |
+
+| 情境 | 机动 |
+| --- | --- |
+| 导弹咬尾、热焰弹打光或只剩 1.5 秒 | 眼镜蛇 / 库尔比特 / 桶滚 |
+| 敌机贴到 720 m 内且已过肩 | 库尔比特（极限半径掉头） |
+| 敌机在后方且高于你，速度还够 | 殷麦曼翻转 |
+| 敌机俯冲脱离，你还有高度 | 破S机动 |
+| 敌机从后方高速接近 | 减速板诱敌冲前 |
+| 需要收紧盘旋 | 高G转弯（持续型，不脱离瞄准回路） |
+| 天空安静且有高度余量 | 展示清单里下一个没做过的动作 |
+
+HUD 右侧会出现 **AUTO ACE 状态条**：当前模式、正在做的动作、`DEMO n/7` 展示进度、
+机体状态与当前目标。电台里它有自己的声音（斜体青色），会说出「看好了 — 眼镜蛇机动」。
+
+被击落不会结束：3.2 秒后它自己重新升空，**展示清单跨重启保留**，所以一键开启后一定会通关。
 
 ---
 
@@ -71,11 +107,31 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 | `F` | 热焰弹 |
 | `1` / `2` | 选择 AAM / GUN |
 | `Y` | 辅助驾驶总开关 |
+| `G` | **全自动皇牌模式总开关（一键自动通关）** |
 | `M` | 静音 |
 | `P` / `Esc` | 暂停 |
 | `H` | 飞行手册 |
 | 鼠标拖拽 | 虚拟驾驶杆 |
-| 屏幕控制台 | 完整触屏可玩：油门、武器、机动、辅助、FIRE、FLARE、TARGET |
+| 屏幕控制台 | 完整触屏可玩：油门、武器、机动、辅助、FIRE、FLARE、TARGET、AUTO ACE |
+
+### 敌机编成（v0.4）
+
+三波进场，共 8 架编队机，加上巨兽释放的无人机。每种机型有独立的轮廓、涂装色、
+血量、转向率、机炮与导弹配置：
+
+| 代号 | 型号 | HP | 转向 | 武装 | 战术要点 |
+| --- | --- | --- | --- | --- | --- |
+| `SCT` | 维斯珀 侦察机 | 62 | 25°/s | 机炮 9 | 最快，无导弹；逼你跟着它掉能量 |
+| `INT` | 维斯珀 截击机 | 100 | 17°/s | AAM + 机炮 7 | 编队主力，稳扎稳打 |
+| `HVY` | 维斯珀 重装攻击机 | 190 | 11°/s | AAM + 机炮 13 | 转得最慢，但机炮最痛 |
+| `JAM` | 维斯珀 电子战机 | 92 | 14°/s | 无 | **活着就一直压制火控：锁定速度减半** |
+| `ACE` | 维斯珀 王牌 | 155 | 22°/s | AAM 冷却最短 + 机炮 10 | 出手早、咬住就不松口 |
+| `CMD` | 维斯珀 指挥机 | 240 | 19°/s | AAM + 机炮 13 | 编队长机，得分最高 |
+| `DRN` | 利维坦 无人机 | 58 | 30°/s | AAM + 机炮 5 | 巨兽放出，护盾一掉就停止 |
+
+**平衡基线：** 玩家的坡度转弯上限约 20°/s（高G转弯 28°/s），所以**每一种敌机都比你转得慢**——
+差距体现在武器、装甲、站位与数量上，而不是靠无法反制的机动性。v0.3 的敌机转向 47–66°/s，
+在三机编队时读作「灵活」，在八机三波时只会读作「不可能」。
 
 ### 战斗机机动（v0.2）
 
@@ -194,8 +250,11 @@ HUD 组件均可单独复用；组合版 `CockpitHud` 只是本项目 Showcase �
 - **HUD**：`CockpitHud` `HeadingTape` `PitchLadder` `FlightPathMarker` `SpeedTape` `AltitudeTape` `TargetMarker` `LockReticle` `MissileWarning` `RadarScope` `WeaponRack` `CommsFeed` `WingmanStatus` `BossBar` `ObjectiveTracker` `ScoreTicker` `DamageOverlay`
 - **操纵与辅助（v0.2）**：`ManeuverRail` `ManeuverBanner` `AssistRail` `FlightAidStrip` `LockSteeringCue` `StartupChecklist` `GLoadMeter`
 - **打击反馈（v0.3）**：`HitConfirm` `DamageDirection` `KillTicker` `CombatFeedbackLayer`
-- **操作**：`CockpitControls`，内部组合油门、武器、机动、辅助、FIRE、热焰弹与目标切换
+- **关卡敌人与自动驾驶（v0.4）**：`AutoPilotButton` `AutoPilotRail` `WaveTracker`（另有 `AutoPilotButtonView` / `AutoPilotRailView` 两个纯展示版本，供文档页复用）
+- **操作**：`CockpitControls`，内部组合油门、武器、机动、辅助、AUTO ACE、FIRE、热焰弹与目标切换
 - **模拟**：`CockpitEngine`、`MANEUVERS`、`ASSISTS`、`TUTORIAL_STEPS`、`useCockpit`、`useCockpitActions`、`useCockpitEngine`、`useCockpitSettings`、`useAudio`、`useCockpitControls`
+- **敌机编成（v0.4）**：`ENEMIES` `ENEMY_ORDER` `enemyProfile` `resolveEnemyId` `waveReady` `describeWave` `waveBriefing` `enemyPriority`
+- **自动驾驶（v0.4）**：`solveAutoPilot` `createAutoPilotMemory` `AUTO_MODE_LABEL` `SHOWCASE_PLAYS` `SHOWCASE_ORDER` `autoPilotCondition`
 - **配乐（v0.3）**：`SCORE_SECTIONS` `SECTION_ORDER` `PHRASES` `selectSection` `phraseForBar` `chordForBar` `degreeToMidi` `midiToFreq`
 - **3D**：`CockpitViewport`、`CockpitScene`（`getDebugInfo()` 供自动化测试）
 - **音频**：`AudioEngine`（可在 Provider 外独立使用）
@@ -235,7 +294,8 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 | --- | --- | --- |
 | 0.1 | 座舱与世界观 | 设计令牌、HUD 组件、three.js 座舱、程序化音频、SUNSET SPEAR 任务 |
 | 0.2 | 战机操作 | 七种战斗机机动、四项辅助驾驶、进入任务后的简要操作说明、飞行手感重做 |
-| **0.3** | **音效与打击感** | **编曲式生成配乐（六段落 / 十条旋律）、战斗音效分层重做、命中与受击反馈、战场氛围层** |
+| 0.3 | 音效与打击感 | 编曲式生成配乐（六段落 / 十条旋律）、战斗音效分层重做、命中与受击反馈、战场氛围层 |
+| **0.4** | **关卡敌人与全自动通关** | **七种敌机型号与三波编成、敌机机炮与电子干扰、一键全自动皇牌模式（AUTO ACE）与机动展示清单** |
 
 ---
 
@@ -259,15 +319,18 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 
 | | |
 | --- | --- |
-| ![Dogfight](docs/screenshots/03-dogfight-1920.png) | ![Hit confirm](docs/screenshots/14-hit-confirm-1920.png) |
-| 制空：锁定 VESPER，检查单与辅助状态条 | v0.3 命中确认：准星上的刻线、伤害数字与连击计数 |
-| ![Splash](docs/screenshots/15-splash-1920.png) | ![Damage bearing](docs/screenshots/16-damage-bearing-1920.png) |
-| v0.3 击坠：爆炸、碎片与 SPLASH 记录 | v0.3 受击方位：指向来袭方向的扇区与告警 |
+| ![Wave inbound](docs/screenshots/19-wave-inbound-1920.png) | ![Auto Ace](docs/screenshots/21-auto-ace-rail-1920.png) |
+| v0.4 波次：`WAVE 2 / 3` 编成表、进场闪示与电台通报 | v0.4 AUTO ACE：右侧状态条、展示进度与当前目标 |
+| ![Showcase](docs/screenshots/20-auto-ace-showcase-1920.png) | ![Threat db](docs/screenshots/22-systems-stage-1920.png) |
+| v0.4 机动展示：殷麦曼翻转与展示清单计数 | v0.4 图鉴：七种机型的威胁档案与 AUTO ACE 卡片 |
+| ![Hit confirm](docs/screenshots/14-hit-confirm-1920.png) | ![Splash](docs/screenshots/15-splash-1920.png) |
+| v0.3 命中确认：准星上的刻线、伤害数字与连击计数 | v0.3 击坠：爆炸、碎片与 SPLASH 记录 |
 | ![Boss](docs/screenshots/04-boss-1920.png) | ![Debrief](docs/screenshots/07-debrief-1920.png) |
 | 战争巨兽 LEVIATHAN 与护盾节点 | 任务结算 / S 评级 |
 
-完整截图集（开场、启动、制空、命中确认、击坠、受击方位、高G转弯、眼镜蛇、巨兽、暂停、手册、Boss 登场、任务失败、系统图鉴、1366 / 390 / 横屏）在
-[`docs/screenshots/`](docs/screenshots/)。
+完整截图集（开场、任务简报与一键按钮、启动、制空、波次进场、命中确认、击坠、受击方位、
+高G转弯、眼镜蛇、巨兽、暂停、手册、Boss 登场、任务失败、全自动接管、机动展示、系统图鉴、
+敌机编成图鉴、1366 / 390 / 横屏）在 [`docs/screenshots/`](docs/screenshots/)。
 
 ---
 
@@ -277,6 +340,8 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 - 飞行模型是街机化手感，不是真实气动；没有地形碰撞、多人联机或完整战役。
 - 机动的姿态剖面是手工调参的脚本，不是真实飞控律；眼镜蛇 / 库尔比特只保留「姿态先动、速度矢量后动」这一条关键特征。
 - 辅助驾驶不会在你正在操作的轴上出力，因此不会替你完成机动，也不会自动开火。
+- **AUTO ACE 是「一个会飞的玩家」，不是无敌模式**：它没有传送、没有免伤、没有额外的弹药或分数，
+  被击落一样会跳伞。它的优势来自帧级精确的跟踪与不会慌的决策；它的上限仍然是你那架飞机的上限。
 - 桌面 Chromium 为主要目标；Safari / Firefox 尽力兼容。WebGL 不可用时会退化为 CSS 黄昏 + 2D HUD。
 - 音频必须在用户手势后启动；自动化无手势环境可能保持静默，但界面仍可用。
 - 没有手柄支持；触屏与键鼠已覆盖全部核心操作。

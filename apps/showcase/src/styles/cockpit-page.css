@@ -1398,6 +1398,88 @@
 }
 
 /* ------------------------------------------------------------------ */
+/* v0.4 help: the threat database and the AUTO ACE note                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The manual doubled in v0.4 — four sections now — so it reads as a 2x2 block
+ * rather than four columns squeezed onto one row.
+ */
+.dialog-panel__grid--three {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dialog-panel--wide .dialog-panel__grid--three {
+  gap: 20px 30px;
+}
+
+.help-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.help-roster li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(99, 243, 255, 0.08);
+}
+
+.help-roster li b {
+  padding: 1px 0;
+  border: 1px solid rgba(255, 77, 90, 0.36);
+  color: var(--tv-red);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+.help-roster li strong {
+  display: block;
+  color: rgba(232, 248, 252, 0.88);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.help-roster li small {
+  display: block;
+  margin-top: 1px;
+  color: rgba(134, 163, 174, 0.66);
+  font-family: var(--tv-font-text);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.help-roster li em {
+  grid-column: 2;
+  color: rgba(134, 163, 174, 0.4);
+  font-size: 6px;
+  font-style: normal;
+  letter-spacing: 0.14em;
+}
+
+.dialog-panel__tip--auto {
+  align-items: flex-start;
+  margin-top: 16px;
+  border-color: rgba(255, 181, 71, 0.28);
+  background: linear-gradient(100deg, rgba(38, 22, 6, 0.5), rgba(6, 18, 26, 0.24));
+}
+
+.dialog-panel__tip--auto strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--tv-amber);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+}
+
+/* ------------------------------------------------------------------ */
 /* Debrief                                                             */
 /* ------------------------------------------------------------------ */
 .game-overlay--debrief {

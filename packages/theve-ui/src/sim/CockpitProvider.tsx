@@ -57,6 +57,9 @@ export interface CockpitActions {
   setAssists: (settings: Partial<AssistSettings>) => void;
   dismissTutorial: () => void;
   restartTutorial: () => void;
+  /** v0.4: one switch hands the whole sortie to the performer (key `G`). */
+  toggleAutoPilot: () => boolean;
+  setAutoPilot: (enabled: boolean) => void;
 }
 
 export interface CockpitAudio {
@@ -316,6 +319,16 @@ export function CockpitProvider({
       },
       dismissTutorial: () => engine.dismissTutorial(),
       restartTutorial: () => engine.restartTutorial(),
+      toggleAutoPilot: () => {
+        const engaged = engine.toggleAutoPilot();
+        // The performer needs a score to fly to, so bring the audio up with it.
+        if (engaged) startIfAudible();
+        return engaged;
+      },
+      setAutoPilot: (enabled) => {
+        engine.setAutoPilot(enabled);
+        if (enabled) startIfAudible();
+      },
     }),
     [engine, startIfAudible],
   );

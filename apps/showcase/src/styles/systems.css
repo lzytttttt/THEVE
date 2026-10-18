@@ -1915,3 +1915,104 @@
     opacity: 0;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* v0.4 — threat database and AUTO ACE                                 */
+/* ------------------------------------------------------------------ */
+
+.systems-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.systems-roster li {
+  display: grid;
+  grid-template-columns: 3px 30px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px dashed rgba(99, 243, 255, 0.1);
+}
+
+.systems-roster__tint {
+  align-self: stretch;
+  min-height: 26px;
+}
+
+.systems-roster li b {
+  color: var(--tv-red);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+
+.systems-roster li strong {
+  display: block;
+  color: rgba(232, 248, 252, 0.9);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.systems-roster li small {
+  display: block;
+  margin-top: 2px;
+  color: rgba(134, 163, 174, 0.68);
+  font-family: var(--tv-font-text);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.systems-roster li em {
+  grid-column: 3;
+  color: rgba(134, 163, 174, 0.44);
+  font-size: 7px;
+  font-style: normal;
+  letter-spacing: 0.12em;
+}
+
+.systems-auto {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+/* The rail is position-absolute inside the HUD; here it is just a card. */
+.systems-auto .tv-auto {
+  position: static;
+  width: 100%;
+}
+
+.systems-auto__demo {
+  max-width: 340px;
+}
+
+.systems-auto__rules {
+  margin: 12px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px dashed rgba(99, 243, 255, 0.12);
+  list-style: none;
+  counter-reset: autorule;
+}
+
+.systems-auto__rules li {
+  position: relative;
+  padding: 5px 0 5px 22px;
+  color: rgba(134, 163, 174, 0.72);
+  font-family: var(--tv-font-text);
+  font-size: 10px;
+  line-height: 1.6;
+  counter-increment: autorule;
+}
+
+.systems-auto__rules li::before {
+  content: "0" counter(autorule);
+  position: absolute;
+  left: 0;
+  color: var(--tv-amber);
+  font-family: var(--tv-font-mono);
+  font-size: 7px;
+}

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { CockpitEngine } from '../sim/engine';
 import type { CockpitQuality } from '../sim/CockpitProvider';
+import { enemyProfile } from '../sim/enemies';
 import type { EffectColor, SimEffect, SimEntity } from '../sim/types';
 
 interface SceneOptions {
@@ -1002,7 +1003,20 @@ export class CockpitScene {
   private createFighter(entity: SimEntity): THREE.Group {
     const group = new THREE.Group();
     const isAlly = entity.team === 'ally';
-    const accent = isAlly ? TEAM_COLORS.ally : entity.variant === 'ace' ? 0xff7546 : TEAM_COLORS.hostile;
+    /**
+     * v0.4 reads the airframe class instead of a single "ace or not" flag. The
+     * roster now has seven silhouettes, and the accent colour is the cheapest
+     * way to tell the audience which one is shooting at them: a violet strobe
+     * across the sky means the jammer, gold means the commander, and both are
+     * worth breaking off for.
+     */
+    const profile = enemyProfile(entity.enemyId);
+    const accent = isAlly
+      ? TEAM_COLORS.ally
+      : profile?.tint ?? (entity.variant === 'ace' ? 0xff7546 : TEAM_COLORS.hostile);
+    const silhouette = profile?.silhouette ?? 'standard';
+    const heavy = silhouette === 'heavy';
+    const light = silhouette === 'light';
     const bodyMaterial = new THREE.MeshStandardMaterial({
       color: isAlly ? 0x2b3d37 : 0x2b333e,
       metalness: 0.62,
@@ -1018,18 +1032,26 @@ export class CockpitScene {
       blending: THREE.AdditiveBlending,
     });
 
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.42, 2.6, 6), bodyMaterial);
+    const nose = new THREE.Mesh(
+      new THREE.ConeGeometry(heavy ? 0.5 : 0.42, heavy ? 3.1 : 2.6, 6),
+      bodyMaterial,
+    );
     nose.rotation.x = -Math.PI / 2;
-    nose.position.z = -2.3;
+    nose.position.z = heavy ? -2.6 : -2.3;
     group.add(nose);
 
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.34, 4.2, 6), bodyMaterial);
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(heavy ? 0.62 : light ? 0.34 : 0.44, 0.34, 4.2, 6),
+      bodyMaterial,
+    );
     body.rotation.x = Math.PI / 2;
     body.position.z = 0.15;
     group.add(body);
     body.add(new THREE.LineSegments(new THREE.EdgesGeometry(body.geometry, 30), edgeMaterial));
 
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(7.6, 0.11, 1.9), bodyMaterial);
+    // Drones are a bare delta; heavies get a long span; everyone else is stock.
+    const span = heavy ? 9.6 : light ? 5.4 : 7.6;
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(span, 0.11, heavy ? 2.4 : 1.9), bodyMaterial);
     wing.position.set(0, -0.02, 0.5);
     group.add(wing);
     wing.add(
@@ -1038,25 +1060,42 @@ export class CockpitScene {
         edgeMaterial,
       ),
     );
-    const leadingEdge = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.02, 0.1), accentMaterial);
-    leadingEdge.position.set(0, 0.01, -0.43);
+    const leadingEdge = new THREE.Mesh(new THREE.BoxGeometry(span - 0.2, 0.02, 0.1), accentMaterial);
+    leadingEdge.position.set(0, 0.01, heavy ? -0.68 : -0.43);
     group.add(leadingEdge);
     const wingTipLeft = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 1.1), accentMaterial);
-    wingTipLeft.position.set(-3.4, 0.015, 0.25);
+    wingTipLeft.position.set(-span / 2 + 0.4, 0.015, 0.25);
     wingTipLeft.rotation.y = 0.24;
     group.add(wingTipLeft);
     const wingTipRight = wingTipLeft.clone();
-    wingTipRight.position.x = 3.4;
+    wingTipRight.position.x = span / 2 - 0.4;
     wingTipRight.rotation.y = -0.24;
     group.add(wingTipRight);
 
-    const stabilizer = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.08, 0.9), bodyMaterial);
+    const stabilizer = new THREE.Mesh(
+      new THREE.BoxGeometry(heavy ? 3.8 : 2.8, 0.08, 0.9),
+      bodyMaterial,
+    );
     stabilizer.position.set(0, 0, 2.1);
     group.add(stabilizer);
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.25, 1.1), bodyMaterial);
-    fin.position.set(0, 0.55, 1.85);
+    const fin = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, heavy ? 1.7 : light ? 0.8 : 1.25, 1.1),
+      bodyMaterial,
+    );
+    fin.position.set(0, heavy ? 0.78 : 0.55, 1.85);
     fin.rotation.x = -0.18;
     group.add(fin);
+    // Twin fins are the heavy airframe's read at long range.
+    if (heavy) {
+      const cantedLeft = fin.clone();
+      cantedLeft.position.set(-1.1, 0.6, 1.9);
+      cantedLeft.rotation.z = 0.34;
+      group.add(cantedLeft);
+      const cantedRight = fin.clone();
+      cantedRight.position.set(1.1, 0.6, 1.9);
+      cantedRight.rotation.z = -0.34;
+      group.add(cantedRight);
+    }
 
     const canopy = new THREE.Mesh(
       new THREE.SphereGeometry(0.42, 10, 6),
@@ -1068,7 +1107,7 @@ export class CockpitScene {
         emissiveIntensity: 0.6,
       }),
     );
-    canopy.scale.set(1, 0.55, 1.8);
+    canopy.scale.set(light ? 0.8 : 1, 0.55, light ? 1.5 : 1.8);
     canopy.position.set(0, 0.36, -0.7);
     group.add(canopy);
 
@@ -1077,25 +1116,25 @@ export class CockpitScene {
       navLightGeometry,
       new THREE.MeshBasicMaterial({ color: 0xff4d5a, transparent: true }),
     );
-    navRed.position.set(-3.8, 0.08, 0.4);
+    navRed.position.set(-span / 2 - 0.2, 0.08, 0.4);
     group.add(navRed);
     const navGreen = new THREE.Mesh(
       navLightGeometry,
       new THREE.MeshBasicMaterial({ color: 0x74ffb0, transparent: true }),
     );
-    navGreen.position.set(3.8, 0.08, 0.4);
+    navGreen.position.set(span / 2 + 0.2, 0.08, 0.4);
     group.add(navGreen);
 
     const navGlowGeometry = new THREE.SpriteMaterial({
       map: this.glowTexture,
-      color: 0xff5d68,
+      color: isAlly ? 0x74ffb0 : accent,
       blending: THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false,
       opacity: 0.7,
     });
     const leftNavGlow = new THREE.Sprite(navGlowGeometry);
-    leftNavGlow.position.set(-3.9, 0.1, 0.5);
+    leftNavGlow.position.set(-span / 2 - 0.1, 0.1, 0.5);
     leftNavGlow.scale.set(2.8, 2.8, 1);
     group.add(leftNavGlow);
     const rightNavGlow = new THREE.Sprite(navGlowGeometry.clone());

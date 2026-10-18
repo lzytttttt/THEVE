@@ -1420,6 +1420,18 @@
   color: var(--tv-amber);
 }
 
+/* v0.4: the auto-pilot speaks in its own voice, distinct from AWACS and the
+   wingman, so the audience can tell who is narrating the show. */
+.tv-comms__item--auto .tv-comms__from {
+  color: var(--tv-cyan);
+  text-shadow: 0 0 8px rgba(99, 243, 255, 0.4);
+}
+
+.tv-comms__item--auto p {
+  color: rgba(232, 248, 252, 0.92);
+  font-style: italic;
+}
+
 .tv-comms__time {
   color: rgba(134, 163, 174, 0.45);
   font-size: 6px;
@@ -1881,7 +1893,15 @@
   display: flex;
   align-items: stretch;
   gap: 7px;
-  width: min(880px, calc(100vw - 30px));
+  /*
+   * v0.4 added the AUTO ACE module, which pushed the natural content width to
+   * about 1.23 m. The deck therefore grew, but the width alone is not enough:
+   * the modules also have to be allowed to give way. Without shrink the flex row
+   * overflowed its own clip-path and silently pushed the utility column (mute,
+   * assist) outside the panel — visible, but on top of the canvas and therefore
+   * unclickable.
+   */
+  width: min(1240px, calc(100vw - 30px));
   padding: 7px;
   transform: translateX(-50%);
   background:
@@ -1941,6 +1961,17 @@
 }
 
 .tv-controls__trigger {
+  flex: 1 1 auto;
+}
+
+.tv-controls__auto {
+  flex: 0 1 186px;
+  min-width: 128px;
+  display: flex;
+  flex-direction: column;
+}
+
+.tv-controls__auto .tv-auto-btn {
   flex: 1 1 auto;
 }
 
@@ -3161,7 +3192,7 @@
     width: 380px;
   }
   .tv-controls {
-    width: min(950px, calc(100vw - 22px));
+    width: min(1090px, calc(100vw - 22px));
   }
   .tv-controls__throttle {
     flex-basis: 166px;
@@ -3174,6 +3205,9 @@
   }
   .tv-controls__aids {
     flex-basis: 104px;
+  }
+  .tv-controls__auto {
+    flex-basis: 158px;
   }
   .tv-maneuvers__grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4007,5 +4041,502 @@
 
   .tv-kills__meta {
     display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.4 — the stage: wave tracker and the AUTO ACE rail                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Both cards live in the same slot, on the right rail under the comms feed, so
+ * they never compete with the centre of the screen or the boss bar. The wave
+ * tracker is always up during a mission; the auto-pilot rail stacks under it
+ * and only exists while the performer has the stick.
+ */
+.tv-hud__stage {
+  position: absolute;
+  top: calc(50% + 148px);
+  right: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 206px;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.tv-wave,
+.tv-auto {
+  background: var(--tv-panel);
+  border: 1px solid rgba(99, 243, 255, 0.16);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+  backdrop-filter: blur(2px);
+}
+
+/* --- wave tracker --------------------------------------------------- */
+
+.tv-wave {
+  padding: 7px 9px 8px;
+  animation: tv-stage-in 320ms ease-out;
+}
+
+.tv-wave.is-inbound {
+  border-color: rgba(255, 181, 71, 0.62);
+  box-shadow: 0 0 0 1px rgba(255, 181, 71, 0.22), 0 0 22px rgba(255, 181, 71, 0.16);
+}
+
+.tv-wave__head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: 'code label' 'code hostiles';
+  align-items: center;
+  gap: 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(99, 243, 255, 0.12);
+}
+
+.tv-wave__code {
+  grid-area: code;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 181, 71, 0.5);
+  color: var(--tv-amber);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.tv-wave__code small {
+  color: var(--tv-mute);
+  font-size: 7px;
+}
+
+.tv-wave__label {
+  grid-area: label;
+  color: var(--tv-ice);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.tv-wave__hostiles {
+  grid-area: hostiles;
+  color: var(--tv-cyan-dim);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+}
+
+.tv-wave__roster {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tv-wave__unit {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 8px;
+}
+
+.tv-wave__unit b {
+  color: var(--tv-mute);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+.tv-wave__unit.is-live b {
+  color: var(--tv-red);
+}
+
+.tv-wave__unit.is-clear b {
+  color: var(--tv-cyan-dim);
+}
+
+.tv-wave__pips {
+  display: flex;
+  gap: 2px;
+}
+
+.tv-wave__pip {
+  width: 7px;
+  height: 3px;
+  background: rgba(134, 163, 174, 0.22);
+}
+
+.tv-wave__pip.is-live {
+  background: var(--tv-red);
+  box-shadow: 0 0 6px rgba(255, 77, 90, 0.65);
+}
+
+.tv-wave__pip.is-down {
+  background: rgba(99, 243, 255, 0.34);
+}
+
+.tv-wave__pip.is-pending {
+  background: rgba(255, 181, 71, 0.4);
+}
+
+.tv-wave__tally {
+  color: var(--tv-cyan-dim);
+  font-size: 8px;
+}
+
+.tv-wave__next,
+.tv-wave__flash {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(99, 243, 255, 0.1);
+  color: var(--tv-mute);
+  font-size: 7px;
+  letter-spacing: 0.12em;
+}
+
+.tv-wave__flash {
+  border-top-color: rgba(255, 181, 71, 0.3);
+  color: var(--tv-amber);
+  animation: tv-wave-flash 700ms steps(2, end) 4;
+}
+
+/* --- auto-pilot rail ------------------------------------------------ */
+
+.tv-auto {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px 8px;
+  border-color: rgba(99, 243, 255, 0.34);
+  animation: tv-stage-in 320ms ease-out;
+}
+
+.tv-auto--defend {
+  border-color: rgba(255, 77, 90, 0.62);
+}
+
+.tv-auto--showcase {
+  border-color: rgba(255, 181, 71, 0.7);
+}
+
+.tv-auto__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tv-auto__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: rgba(99, 243, 255, 0.12);
+  color: var(--tv-cyan);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+}
+
+.tv-auto__mode {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  color: var(--tv-ice);
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+.tv-auto__mode em {
+  color: var(--tv-mute);
+  font-size: 7px;
+  font-style: normal;
+  letter-spacing: 0.12em;
+}
+
+.tv-auto__callout {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tv-auto__callout-text {
+  color: var(--tv-amber);
+  font-size: 10px;
+}
+
+.tv-auto__track {
+  display: block;
+  height: 2px;
+  background: rgba(255, 181, 71, 0.18);
+}
+
+.tv-auto__track i {
+  display: block;
+  height: 100%;
+  background: var(--tv-amber);
+}
+
+.tv-auto__row {
+  display: grid;
+  grid-template-columns: 30px 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.tv-auto__label {
+  color: var(--tv-mute);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+}
+
+.tv-auto__reel {
+  display: flex;
+  gap: 2px;
+}
+
+.tv-auto__reel-cell {
+  flex: 1;
+  height: 4px;
+  background: rgba(134, 163, 174, 0.2);
+}
+
+.tv-auto__reel-cell.is-shown {
+  background: var(--tv-cyan);
+}
+
+.tv-auto__reel-cell.is-latest {
+  background: var(--tv-amber);
+  box-shadow: 0 0 7px rgba(255, 181, 71, 0.7);
+}
+
+.tv-auto__count {
+  color: var(--tv-cyan-dim);
+  font-size: 8px;
+}
+
+.tv-auto__count small {
+  color: var(--tv-mute);
+  font-size: 7px;
+}
+
+.tv-auto__bar {
+  display: block;
+  height: 3px;
+  background: rgba(99, 243, 255, 0.16);
+}
+
+.tv-auto__bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--tv-red), var(--tv-amber) 55%, var(--tv-cyan));
+}
+
+.tv-auto__retry {
+  color: var(--tv-red);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.tv-auto__target {
+  color: var(--tv-mute);
+  font-size: 8px;
+}
+
+.tv-auto__target b {
+  color: var(--tv-ice);
+}
+
+@keyframes tv-stage-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+
+@keyframes tv-wave-flash {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* v0.4 — the one-key switch                                           */
+/* ------------------------------------------------------------------ */
+
+.tv-auto-btn {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid rgba(99, 243, 255, 0.34);
+  background: linear-gradient(100deg, rgba(6, 20, 30, 0.9), rgba(9, 30, 42, 0.72));
+  color: var(--tv-ice);
+  text-align: left;
+  cursor: pointer;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.tv-auto-btn:hover {
+  border-color: var(--tv-cyan);
+}
+
+.tv-auto-btn.is-on {
+  border-color: var(--tv-amber);
+  background: linear-gradient(100deg, rgba(38, 22, 6, 0.92), rgba(30, 26, 10, 0.7));
+  box-shadow: inset 0 0 20px rgba(255, 181, 71, 0.12);
+}
+
+.tv-auto-btn__mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(99, 243, 255, 0.4);
+  color: var(--tv-cyan);
+}
+
+.tv-auto-btn.is-on .tv-auto-btn__mark {
+  border-color: var(--tv-amber);
+  color: var(--tv-amber);
+  animation: tv-auto-pulse 1.7s ease-in-out infinite;
+}
+
+.tv-auto-btn__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tv-auto-btn__text b {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.tv-auto-btn__text b em {
+  color: var(--tv-amber);
+  font-size: 8px;
+  font-style: normal;
+  letter-spacing: 0.14em;
+}
+
+.tv-auto-btn__sub {
+  overflow: hidden;
+  color: var(--tv-mute);
+  font-size: 7px;
+  letter-spacing: 0.1em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tv-auto-btn--solo {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 13px 16px;
+  border-width: 1px;
+  border-color: rgba(99, 243, 255, 0.5);
+}
+
+.tv-auto-btn--solo .tv-auto-btn__text b {
+  font-size: 15px;
+  letter-spacing: 0.06em;
+}
+
+.tv-auto-btn--solo .tv-auto-btn__text b em {
+  font-size: 9px;
+}
+
+.tv-auto-btn--solo .tv-auto-btn__mark {
+  width: 42px;
+  height: 42px;
+}
+
+.tv-auto-btn--solo.is-on {
+  border-color: var(--tv-amber);
+}
+
+.tv-auto-btn__cta {
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  color: var(--tv-cyan);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  white-space: nowrap;
+}
+
+.tv-auto-btn--solo.is-on .tv-auto-btn__cta {
+  color: var(--tv-amber);
+}
+
+.tv-auto-btn__hint {
+  grid-column: 1 / -1;
+  color: var(--tv-mute);
+  font-size: 7px;
+  letter-spacing: 0.12em;
+}
+
+@keyframes tv-auto-pulse {
+  50% {
+    box-shadow: 0 0 14px rgba(255, 181, 71, 0.5);
+  }
+}
+
+/* Command-deck module for the switch. The deck variant is cramped by design,
+   so the label drops a size and the keyboard hint takes the space instead. */
+.tv-controls__auto .tv-auto-btn {
+  padding: 6px 8px;
+  gap: 7px;
+}
+
+.tv-controls__auto .tv-auto-btn__text b {
+  font-size: 9px;
+  gap: 5px;
+}
+
+.tv-controls__auto .tv-auto-btn__text b em {
+  display: none;
+}
+
+.tv-controls__auto .tv-auto-btn__sub {
+  font-size: 6px;
+}
+
+.tv-controls__auto .tv-auto-btn__mark {
+  width: 24px;
+  height: 24px;
+}
+
+@media (max-width: 1240px) {
+  .tv-hud__stage {
+    width: 178px;
+  }
+
+  .tv-wave__hostiles {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .tv-hud__stage {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv-wave,
+  .tv-auto,
+  .tv-wave__flash,
+  .tv-auto-btn.is-on .tv-auto-btn__mark {
+    animation: none;
   }
 }

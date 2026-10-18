@@ -37,6 +37,11 @@ import {
   formatClock,
   SCORE_SECTIONS,
   SECTION_ORDER,
+  AutoPilotButtonView,
+  AutoPilotRailView,
+  ENEMIES,
+  ENEMY_ORDER,
+  type AutoPilotHud,
   type BossHud,
   type CommsMessage,
   type HudTarget,
@@ -88,6 +93,7 @@ const SAMPLE_TARGET: HudTarget = {
   kind: 'fighter',
   team: 'hostile',
   variant: 'standard',
+  enemyId: 'interceptor',
   distance: 1240,
   hp: 100,
   maxHp: 100,
@@ -96,6 +102,7 @@ const SAMPLE_TARGET: HudTarget = {
   locked: true,
   lockProgress: 1,
   lockable: true,
+  priority: 1,
   screen: { x: 0.64, y: 0.42, scale: 1, onScreen: true },
 };
 
@@ -109,6 +116,25 @@ const SAMPLE_LOCK: LockState = {
   steering: 0,
   elevation: 0,
   assisted: false,
+  jammed: false,
+};
+
+/** v0.4: a mid-showcase snapshot for the AUTO ACE documentation card. */
+const SAMPLE_AUTO: AutoPilotHud = {
+  engaged: true,
+  mode: 'showcase',
+  code: 'SHOW',
+  labelEn: 'SHOWCASE',
+  labelZh: '机动展示',
+  callout: '库尔比特反转',
+  progress: 0.46,
+  demonstrated: 6,
+  total: 7,
+  plays: 9,
+  condition: 0.72,
+  targetCallsign: 'VESPER ACE',
+  retryIn: null,
+  shown: ['highG', 'barrelRoll', 'splitS', 'immelmann', 'airbrake', 'cobra'],
 };
 
 const SAMPLE_BOSS: BossHud = {
@@ -210,7 +236,7 @@ export function SystemsPage({ onNavigate }: SystemsPageProps) {
           </a>
         </nav>
         <div className="systems-head__meta">
-          <span className="systems-head__build tv-mono">V0.3.0 / TACS-8</span>
+          <span className="systems-head__build tv-mono">V0.4.0 / TACS-8</span>
           <Button variant="primary" kbd="↗" onClick={() => onNavigate('cockpit')}>
             进入座舱
           </Button>
@@ -588,6 +614,67 @@ export function SystemsPage({ onNavigate }: SystemsPageProps) {
                   <p className="component-note">
                     告警文本同时承担视觉与屏幕阅读器通知；声音音量独立于视觉层。
                   </p>
+                </Panel>
+              </div>
+            </section>
+
+            {/* v0.4 — the cast, and the one-key performer that flies against it. */}
+            <section className="systems-section" id="systems-04b">
+              <SectionHead
+                number="04b"
+                en="Stage &amp; Auto Ace"
+                zh="敌机编成与全自动皇牌模式"
+                desc="七个机型分三波进场；同一个飞控模型既可以交给你，也可以交给自动驾驶。"
+              />
+              <div className="systems-grid systems-grid--two">
+                <Panel tone="glass" label="THREAT DB / 敌机识别" className="sys-card">
+                  <ul className="systems-roster">
+                    {ENEMY_ORDER.map((id) => {
+                      const profile = ENEMIES[id];
+                      return (
+                        <li key={id}>
+                          <span
+                            className="systems-roster__tint"
+                            style={{ background: `#${profile.tint.toString(16).padStart(6, '0')}` }}
+                            aria-hidden="true"
+                          />
+                          <b className="tv-mono">{profile.code}</b>
+                          <div>
+                            <strong>{profile.labelZh}</strong>
+                            <small>{profile.role}</small>
+                          </div>
+                          <em className="tv-mono">
+                            {profile.hp} HP · {Math.round((profile.turnRate * 180) / Math.PI)}°/s
+                            {profile.jammer ? ' · ECM' : ''}
+                            {profile.gun ? ` · GUN ${profile.gun.dps}` : ''}
+                          </em>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <p className="component-note">
+                    每种机型的转向率都低于玩家（约 20°/s，高G转弯 28°/s），差别体现在
+                    武器、装甲、站位与数量上，而不是靠无法反制的机动性。
+                  </p>
+                </Panel>
+                <Panel tone="glass" label="AUTO ACE / 全自动皇牌模式" className="sys-card">
+                  <div className="systems-auto">
+                    <AutoPilotRailView auto={SAMPLE_AUTO} />
+                    <div className="systems-auto__demo">
+                      <AutoPilotButtonView auto={SAMPLE_AUTO} />
+                    </div>
+                  </div>
+                  <p className="component-note">
+                    按 G 一键接管。它不是外挂：每一帧它写入的都是和你按键时完全相同的
+                    俯仰/滚转/偏航、油门、武器选择与扳机，走同一套飞行模型、同一份弹药、
+                    同一个评分。区别只在于它知道什么时候该做库尔比特。
+                  </p>
+                  <ul className="systems-auto__rules">
+                    <li>先清护航，再打巨兽：机炮射程内还有敌机时，护盾节点排到后面。</li>
+                    <li>导弹优先用热焰弹解决，超机动留给热焰弹解决不了的那 1.5 秒。</li>
+                    <li>追不上就脱离：机头偏出 58° 超过 1.8 秒就拉直重新进入攻击航线。</li>
+                    <li>被击落后 3 秒重新升空，机动展示清单跨重启保留。</li>
+                  </ul>
                 </Panel>
               </div>
             </section>

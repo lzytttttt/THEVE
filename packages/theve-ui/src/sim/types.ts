@@ -52,6 +52,16 @@ export type TargetKind = 'fighter' | 'wingman' | 'weakpoint';
 export type WeaponId = 'aam' | 'gun';
 export type WeakpointKey = 'shieldL' | 'shieldR' | 'core';
 
+/** v0.4 airframe classes. The profile table lives in `sim/enemies.ts`. */
+export type EnemyId =
+  | 'scout'
+  | 'interceptor'
+  | 'heavy'
+  | 'jammer'
+  | 'drone'
+  | 'ace'
+  | 'commander';
+
 export interface ControlInput {
   pitch: number;
   roll: number;
@@ -83,6 +93,12 @@ export interface AIState {
   cooldown: number;
   evadeTimer: number;
   seed: number;
+  /** v0.4: seconds left in the current gun burst; 0 when not shooting. */
+  gunBurst: number;
+  /** v0.4: seconds until the next burst may start. */
+  gunCooldown: number;
+  /** v0.4: rounds that connected in the burst, for the radio taunt. */
+  burstHits: number;
 }
 
 export interface MissileState {
@@ -118,6 +134,8 @@ export interface SimEntity {
   radius: number;
   alive: boolean;
   variant: 'standard' | 'ace' | 'dreadnought';
+  /** v0.4 airframe class; null for the player, the wingman and the boss. */
+  enemyId: EnemyId | null;
   ai: AIState | null;
   missile: MissileState | null;
   weakpoint: WeakpointState | null;
@@ -166,9 +184,32 @@ export interface SimEffect {
 export interface ScenarioEnemy {
   callsign: string;
   variant?: 'standard' | 'ace';
+  /** v0.4 airframe class. Falls back to a callsign lookup when omitted. */
+  enemy?: EnemyId;
   distance: number;
   side: number;
   vertical: number;
+}
+
+/**
+ * v0.4 reinforcement wave. The scenario's flat `enemies` list is wave one; each
+ * entry here arrives once the previous fighting has burned down enough.
+ */
+export interface ScenarioWave {
+  id: string;
+  /** Display code, e.g. "WAVE 2". */
+  code: string;
+  labelEn: string;
+  labelZh: string;
+  /** Arrives once kills reach this count… */
+  atKills: number;
+  /** …or this many seconds have passed, whichever comes first. */
+  atTime: number;
+  /** Max hostiles in the air, this wave's own aircraft included. */
+  concurrent?: number;
+  /** Overrides the generated AWACS call. */
+  alertZh?: string;
+  units: ScenarioEnemy[];
 }
 
 export interface Scenario {
@@ -181,6 +222,8 @@ export interface Scenario {
   awacsCallsign: string;
   start: { speed: number; altitude: number; heading: number };
   enemies: ScenarioEnemy[];
+  /** v0.4: later waves, in arrival order. */
+  reinforcements?: ScenarioWave[];
   requiredKills: number;
   bossTriggerAt: number;
   boss: {
@@ -206,7 +249,7 @@ export interface WarningState {
   expiresAt: number;
 }
 
-export type CommsRole = 'awacs' | 'wingman' | 'command' | 'system' | 'enemy';
+export type CommsRole = 'awacs' | 'wingman' | 'command' | 'system' | 'enemy' | 'auto';
 
 export interface CommsMessage {
   id: string;
@@ -223,6 +266,8 @@ export interface HudTarget {
   kind: TargetKind;
   team: Team;
   variant: 'standard' | 'ace' | 'dreadnought';
+  /** v0.4 airframe class, so the HUD can print a threat-database code. */
+  enemyId: EnemyId | null;
   distance: number;
   hp: number;
   maxHp: number;
@@ -231,6 +276,8 @@ export interface HudTarget {
   locked: boolean;
   lockProgress: number;
   lockable: boolean;
+  /** True for the bandit the autopilot would go for next. */
+  priority: number;
   screen: { x: number; y: number; scale: number; onScreen: boolean };
 }
 
@@ -298,6 +345,8 @@ export interface LockState {
   elevation: number;
   /** True while the target steering aid is nudging the nose. */
   assisted: boolean;
+  /** v0.4: an enemy jammer is degrading the fire-control solution. */
+  jammed: boolean;
 }
 
 export interface ManeuverStatus {
@@ -415,6 +464,75 @@ export interface CombatFeedback {
   combo: number;
 }
 
+/* ------------------------------------------------------------------ */
+/* v0.4 — the stage, the waves and the auto-pilot                      */
+/* ------------------------------------------------------------------ */
+
+/** One line of the enemy-threat readout. */
+export interface RosterEntry {
+  enemyId: EnemyId;
+  code: string;
+  labelZh: string;
+  labelEn: string;
+  /** Allocated to the mission, whether or not it is airborne yet. */
+  total: number;
+  /** Still flying. */
+  alive: number;
+  /** Already shot down. */
+  down: number;
+}
+
+export interface WaveHud {
+  /** "WAVE 2 / 4" — the initial wave counts as one. */
+  index: number;
+  total: number;
+  code: string;
+  labelEn: string;
+  labelZh: string;
+  /** Seconds until the next wave is released, or null when none are left. */
+  nextIn: number | null;
+  /** True right after a wave arrives, for the HUD flash. */
+  inbound: boolean;
+  /** Airborne hostiles. */
+  hostiles: number;
+  roster: RosterEntry[];
+}
+
+export type AutoPilotMode =
+  | 'standby'
+  | 'transit'
+  | 'engage'
+  | 'defend'
+  | 'showcase'
+  | 'recover'
+  | 'complete';
+
+export interface AutoPilotHud {
+  engaged: boolean;
+  mode: AutoPilotMode;
+  /** Three-letter code for the compact rail. */
+  code: string;
+  labelEn: string;
+  labelZh: string;
+  /** The move it is flying right now, if any. */
+  callout: string;
+  /** 0..1 progress through the active scripted manoeuvre. */
+  progress: number;
+  /** How many distinct manoeuvres it has shown the audience. */
+  demonstrated: number;
+  total: number;
+  /** Total style plays flown this sortie. */
+  plays: number;
+  /** 0..1 self-assessed condition — hull, ammo and threat rolled together. */
+  condition: number;
+  /** The bandit it is currently working on. */
+  targetCallsign: string | null;
+  /** Seconds until it climbs back in after being shot down. */
+  retryIn: number | null;
+  /** Ordered list of the moves it has already shown. */
+  shown: ManeuverId[];
+}
+
 export interface CockpitSnapshot {
   phase: MissionPhase;
   paused: boolean;
@@ -467,6 +585,10 @@ export interface CockpitSnapshot {
   assist: AssistSnapshot;
   tutorial: TutorialState;
   combat: CombatFeedback;
+  /** v0.4: the wave the mission is on, plus the enemy roster tally. */
+  wave: WaveHud;
+  /** v0.4: the auto-pilot's own readout. */
+  auto: AutoPilotHud;
   mission: {
     kills: number;
     requiredKills: number;
@@ -518,7 +640,15 @@ export type SimEvent =
   | { type: 'tutorial-complete' }
   | { type: 'tutorial-dismissed' }
   | { type: 'mission-complete' }
-  | { type: 'mission-failed' };
+  | { type: 'mission-failed' }
+  /* --- v0.4 --- */
+  | { type: 'wave-inbound'; code: string; labelZh: string; units: number }
+  | { type: 'enemy-gun'; id: string }
+  | { type: 'jammer-active'; engaged: boolean }
+  | { type: 'auto-engage'; enabled: boolean }
+  | { type: 'auto-play'; maneuver: ManeuverId; playId: string; demonstration: boolean }
+  | { type: 'auto-retry' }
+  | { type: 'auto-complete' };
 
 export type SimListener = (event: SimEvent) => void;
 

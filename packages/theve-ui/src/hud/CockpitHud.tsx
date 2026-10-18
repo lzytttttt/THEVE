@@ -19,6 +19,7 @@ import {
   ManeuverBanner,
   StartupChecklist,
 } from './maneuvers';
+import { AutoPilotRail, WaveTracker } from './autopilot';
 
 export interface CockpitHudProps {
   className?: string;
@@ -29,6 +30,8 @@ export interface CockpitHudProps {
   showAidStrip?: boolean;
   /** The v0.3 hit marker, damage bearings and kill ticker. On by default. */
   showCombatFeedback?: boolean;
+  /** The v0.4 wave tracker and auto-pilot rail. On by default. */
+  showStage?: boolean;
 }
 
 /**
@@ -42,6 +45,7 @@ export function CockpitHud({
   showChecklist = true,
   showAidStrip = true,
   showCombatFeedback = true,
+  showStage = true,
 }: CockpitHudProps) {
   const snapshot = useCockpit();
   const actions = useCockpitActions();
@@ -134,6 +138,13 @@ export function CockpitHud({
       <div className="tv-hud__maneuver">
         <ManeuverBanner />
       </div>
+
+      {showStage && (
+        <div className="tv-hud__stage">
+          <WaveTracker />
+          <AutoPilotRail />
+        </div>
+      )}
 
       <MissileWarning warnings={warnings} />
 

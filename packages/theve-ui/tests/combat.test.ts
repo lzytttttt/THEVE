@@ -107,7 +107,8 @@ describe('v0.3 impact feedback', () => {
 
     const kills = events.filter((event) => event.type === 'kill');
     expect(kills).toHaveLength(1);
-    expect(kills[0]).toMatchObject({ callsign: 'VESPER 9', points: 180, ace: true });
+    // v0.4 resolves `variant: 'ace'` to the VESPER ACE airframe, worth 320.
+    expect(kills[0]).toMatchObject({ callsign: 'VESPER 9', points: 320, ace: true });
     expect(kinds(engine.getEffects())).toContain('debris');
 
     const feed = engine.getSnapshot().combat.kills;
