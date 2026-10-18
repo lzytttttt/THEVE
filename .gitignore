@@ -10,3 +10,4 @@ Thumbs.db
 docs/screenshots/*.tmp.png
 *.tgz
 *.tsbuildinfo
+.vercel

@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@11.25.0",
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "description": "THEVE // TACS-8 — a cinematic cockpit avionics UI kit and playable air-combat showcase.",
   "scripts": {
