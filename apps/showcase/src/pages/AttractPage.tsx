@@ -220,7 +220,7 @@ export function AttractPage({ onNavigate }: AttractPageProps) {
           <span>
             <Keycap>空格</Keycap> 发射
           </span>
-          <span className="attract__bottom-version">V0.4.0</span>
+          <span className="attract__bottom-version">V0.5.0</span>
         </div>
       </footer>
     </main>

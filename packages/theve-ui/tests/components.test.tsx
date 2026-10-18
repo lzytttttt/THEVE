@@ -21,6 +21,7 @@ function stubSnapshot(overrides: Partial<CockpitSnapshot> = {}): CockpitSnapshot
     operation: 'OP. 08',
     titleEn: 'SUNSET SPEAR',
     titleZh: '落日之矛',
+    view: 'cockpit',
     flight: {
       speed: 250,
       knots: 486,

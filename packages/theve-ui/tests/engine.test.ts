@@ -91,7 +91,11 @@ describe('CockpitEngine targeting and weapons', () => {
     const engine = startCombat({ enemies: [], requiredKills: 2, bossTriggerAt: 600 });
     engine.flare();
     expect(engine.weapons.flares).toBe(5);
-    expect(engine.getEntities().filter((entity) => entity.kind === 'flare').length).toBe(3);
+    // v0.5 throws a four-cartridge salvo, and each cartridge is a real entity
+    // with its own drift so a missile can be seduced by it in flight.
+    const cartridges = engine.getEntities().filter((entity) => entity.kind === 'flare');
+    expect(cartridges.length).toBe(4);
+    expect(cartridges.every((flare) => flare.drift !== null)).toBe(true);
     engine.flare();
     expect(engine.weapons.flares).toBe(5);
   });

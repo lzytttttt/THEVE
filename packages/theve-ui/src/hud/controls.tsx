@@ -1,5 +1,6 @@
 import { useCockpit, useCockpitActions, useAudio } from '../sim/CockpitProvider';
 import { cx, IconButton, Keycap } from '../primitives';
+import { VIEW_LABEL, VIEW_ORDER } from '../sim/types';
 import {
   IconFlame,
   IconMissile,
@@ -7,6 +8,7 @@ import {
   IconSoundOff,
   IconSoundOn,
   IconTarget,
+  IconView,
   IconWarning,
 } from '../icons';
 import { AssistRail, ManeuverRail } from './maneuvers';
@@ -146,6 +148,34 @@ export function CockpitControls({ className }: CockpitControlsProps) {
           </span>
         </div>
         <AutoPilotButton />
+      </div>
+
+      <div className="tv-controls__module tv-controls__view">
+        <div className="tv-controls__module-head">
+          <span>VIEW</span>
+          <span className={cx('tv-mono', snapshot.view === 'chase' && 'tv-cyan')}>
+            {VIEW_LABEL[snapshot.view].code}
+          </span>
+        </div>
+        {/* v0.5 camera switch. Both options are always reachable, because the
+            outside view is the only way to see the manoeuvres you are flying. */}
+        <div className="tv-view" role="group" aria-label="视角切换">
+          {VIEW_ORDER.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={cx('tv-view__item', snapshot.view === mode && 'is-active')}
+              aria-pressed={snapshot.view === mode}
+              aria-label={`切换到${VIEW_LABEL[mode].zh}`}
+              onClick={() => actions.setView(mode)}
+            >
+              <IconView size={15} mode={mode} />
+              <span>{VIEW_LABEL[mode].zh}</span>
+              <em className="tv-mono">{VIEW_LABEL[mode].en}</em>
+            </button>
+          ))}
+          <Keycap>O</Keycap>
+        </div>
       </div>
 
       <div className="tv-controls__module tv-controls__trigger">

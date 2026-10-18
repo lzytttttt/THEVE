@@ -274,6 +274,7 @@ function world(overrides: Partial<AutoPilotWorld> = {}): AutoPilotWorld {
     activeProgress: 0,
     contacts: [],
     threats: [],
+    hazard: null,
     selectedId: null,
     lock: { state: 'none', progress: 0, targetId: null, distance: 0 },
     weapons: { selected: 'aam', missiles: 10, gunAmmo: 900, flares: 6 },

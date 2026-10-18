@@ -5,6 +5,7 @@ import type {
   CockpitAudio,
   CockpitQuality,
   CockpitSnapshot,
+  ViewMode,
 } from '@theve/ui';
 import {
   AutoPilotButton,
@@ -16,8 +17,11 @@ import {
   IconMissile,
   IconRadar,
   IconScan,
+  IconView,
   IconWarning,
   Keycap,
+  VIEW_LABEL,
+  VIEW_ORDER,
   Toggle,
   cx,
   formatClock,
@@ -38,6 +42,7 @@ const CONTROLS: Array<[string, string, string]> = [
   ['TAB', '切换目标', 'TARGET'],
   ['F', '热焰弹', 'FLARE'],
   ['Y', '辅助驾驶开关', 'FLIGHT AIDS'],
+  ['O', '切换座舱 / 第三人称视角', 'VIEW'],
   ['G', '全自动皇牌模式（一键通关）', 'AUTO ACE'],
   ['P / ESC', '暂停', 'PAUSE'],
 ];
@@ -52,6 +57,19 @@ const ENEMY_ROSTER: Array<[string, string, string, string]> = [
   ['CMD', '维斯珀 指挥机', '编队长机：击落它等于拆掉整队的大脑', 'VESPER COMMANDER'],
   ['DRN', '利维坦 无人机', '巨兽放出的消耗品，个体弱但数量多', 'LEVIATHAN DRONE'],
 ];
+
+/**
+ * v0.5 LEVIATHAN attack book, mirrored from `sim/boss.ts`. The briefing prints
+ * the counter next to every attack, because "the boss is hard" is only fair if
+ * the player is told which stick input answers it.
+ */
+const BOSS_ATTACKS: Array<[string, string, string, string]> = [
+  ['CIWS', '近防炮拦截', '不要正对舰体直线进入 — 做侧向掠袭', 'CLOSE-IN GUNS'],
+  ['VLS', '垂直发射齐射', 'F 释放热焰弹，或 V 做桶滚把导弹甩掉', 'MISSILE SALVO'],
+  ['PULSE', '护盾冲击脉冲', '不要在一千米内盘旋 — 脱离或加速穿出', 'SHIELD DISCHARGE'],
+  ['LANCE', '主炮照射', '炮口亮起就横向脱离炮轴 — 桶滚 / 高G急转', 'SPINAL LANCE'],
+];
+
 
 const MANEUVERS: Array<[string, string, string]> = [
   ['C', '高G转弯', 'HIGH-G TURN'],
@@ -269,7 +287,38 @@ export function BriefingOverlay({ onLaunch, onExit, muted, onAutoAce }: Briefing
               <div>
                 <strong className="tv-mono">MASSIVE CONTACT / 战争巨兽</strong>
                 <span>
-                  LEVIATHAN-CLASS AERIAL DREADNOUGHT · 注意弹幕预警，热焰弹可以救你一命。
+                  LEVIATHAN-CLASS AERIAL DREADNOUGHT — 它有实体碰撞体积，别撞上去；
+                  护盾节点挂在两侧舷外挂架上，反应堆藏在舰艏的装甲口里。
+                </span>
+              </div>
+            </div>
+            {/* v0.5: the boss is a puzzle, so the briefing prints the answer key.
+                Every attack and the stick input that beats it. */}
+            <div className="brief-panel__threat-db">
+              <div className="brief-panel__threat-db-head">
+                <span className="tv-mono">LEVIATHAN ATTACK BOOK</span>
+                <span className="tv-mono">4 ATTACKS</span>
+              </div>
+              <ul>
+                {BOSS_ATTACKS.map(([code, zh, counter, en]) => (
+                  <li key={code}>
+                    <span className="tv-mono brief-panel__threat-code">{code}</span>
+                    <div>
+                      <strong>{zh}</strong>
+                      <small className="tv-mono">{en}</small>
+                    </div>
+                    <em>应对：{counter}</em>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="brief-panel__camera">
+              <IconView size={16} />
+              <div>
+                <strong className="tv-mono">CAMERA / 视角</strong>
+                <span>
+                  按 <Keycap>O</Keycap> 在座舱与第三人称跟随视角之间切换；
+                  外部视角可以看清本机姿态、机动动作与翼尖水汽。
                 </span>
               </div>
             </div>
@@ -461,6 +510,9 @@ export interface PauseOverlayProps {
   setQuality: (quality: CockpitQuality) => void;
   invertPitch: boolean;
   setInvertPitch: (invert: boolean) => void;
+  /** v0.5: the camera the player is riding in. */
+  view: ViewMode;
+  setView: (mode: ViewMode) => void;
   assists: AssistSettings;
   assistMaster: boolean;
   setAssist: (id: AssistId, enabled: boolean) => void;
@@ -482,6 +534,8 @@ export function PauseOverlay({
   setQuality,
   invertPitch,
   setInvertPitch,
+  view,
+  setView,
   assists,
   assistMaster,
   setAssist,
@@ -528,6 +582,28 @@ export function PauseOverlay({
               <span>反转俯仰</span>
               <Toggle checked={invertPitch} onCheckedChange={setInvertPitch} label={invertPitch ? 'INVERTED' : 'STANDARD'} />
             </div>
+            <div className="settings-row settings-row--view">
+              <span>视角</span>
+              <div className="segmented">
+                {VIEW_ORDER.map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={cx('segmented__item', view === mode && 'is-active')}
+                    onClick={() => setView(mode)}
+                    aria-pressed={view === mode}
+                    title={`${VIEW_LABEL[mode].zh} / ${VIEW_LABEL[mode].en}`}
+                  >
+                    {VIEW_LABEL[mode].code}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="dialog-panel__note tv-mono">
+              {view === 'chase'
+                ? 'CHASE CAM · 自机模型与机动动效可见（O 键切换）'
+                : 'COCKPIT CAM · 座舱框与全息 HUD（O 键切换）'}
+            </p>
             <div className="settings-row">
               <span>音效 / 主题音乐</span>
               <Toggle
@@ -592,7 +668,7 @@ export function PauseOverlay({
           <span>
             <Keycap>ESC</Keycap> 恢复
           </span>
-          <span>THEVE // TACS-8 · SIMULATION CORE v0.4</span>
+          <span>THEVE // TACS-8 · SIMULATION CORE v0.5</span>
         </div>
       </div>
     </div>
@@ -642,8 +718,9 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
                 八架敌机分三波进来，每波抵达时都会补给弹药；护盾节点很吃导弹，但机炮也能磨。
               </li>
               <li>
-                <strong>热焰弹是保命键。</strong>
-                RWR 告警后按 F，60% 概率诱骗来袭导弹；桶滚 V 也能直接甩掉跟踪。
+                <strong>热焰弹是保命键，但要看时机。</strong>
+                RWR 告警后按 F：四发弹体带惯性抛出，任何从 130 m 内掠过的导弹都会被引开——
+                早一秒放也有用，晚一秒放才有用。
               </li>
               <li>
                 <strong>高G转弯换角度，减速板换位置。</strong>
@@ -652,6 +729,11 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
               <li>
                 <strong>别把机头停在重装机的炮口前。</strong>
                 它的转向很差，但 13 dps 的机炮会在你停留的两秒里把机体打穿。
+              </li>
+              <li>
+                <strong>LEVIATHAN 是一道问答题，不是血条。</strong>
+                近防炮要侧向掠袭、齐射要放热焰弹、脉冲要脱离千米、主炮要横向脱离炮轴；
+                舰体是实心的，撞上去掉 45% 结构。
               </li>
             </ol>
           </section>
@@ -669,6 +751,18 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
                 </li>
               ))}
             </ul>
+            <div className="dialog-panel__tip">
+              <IconWarning size={14} />
+              <span>
+                <strong className="tv-mono">LEVIATHAN ATTACK BOOK</strong>
+                {BOSS_ATTACKS.map(([code, zh, counter]) => (
+                  <em key={code} className="help-attack">
+                    <b className="tv-mono">{code}</b>
+                    {zh} — {counter}
+                  </em>
+                ))}
+              </span>
+            </div>
           </section>
         </div>
         <div className="dialog-panel__tip dialog-panel__tip--auto">
@@ -677,7 +771,17 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
             <strong className="tv-mono">AUTO ACE / 全自动皇牌模式</strong>
             按 G 把杆交给飞控：它会自己升空、自己选目标、自己在正确的时机做眼镜蛇、
             库尔比特与殷麦曼，把整场任务打完；被击落会在几秒后重新升空。
-            它用的每一项操作都与你手动时完全相同——同样的飞行模型、同样的弹药、同样的评分。
+            它用的每一项操作都与你手动时完全相同——同样的飞行模型、同样的弹药、同样的评分，
+            LEVIATHAN 的四种攻击它也靠同样的机动躲。
+          </span>
+        </div>
+        <div className="dialog-panel__tip dialog-panel__tip--auto">
+          <IconView size={14} />
+          <span>
+            <strong className="tv-mono">VIEW / 视角</strong>
+            按 O（或屏幕控制台的 VIEW 模块）在座舱视角与第三人称跟随视角之间切换。
+            外部视角会渲染 LUMEN 1 本机、可动的操纵面、加力尾焰与高G时的翼尖水汽，
+            做眼镜蛇、库尔比特或桶滚时镜头会拉开并滞后一拍，机动动作因此在画面里读得出来。
           </span>
         </div>
         <div className="dialog-panel__actions">

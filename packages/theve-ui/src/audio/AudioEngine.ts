@@ -8,7 +8,10 @@ import {
   selectSection,
   type SectionId,
 } from './score';
-import type { AudioTelemetry, SimEvent, TargetKind } from '../sim/types';
+// The telegraph cues are timed by the attack book rather than by their own
+// constants, so retuning a warning window cannot desync its sound.
+import { BOSS_ATTACKS } from '../sim/boss';
+import type { AudioTelemetry, BossAttackId, SimEvent, TargetKind } from '../sim/types';
 
 type BusName = 'engine' | 'music' | 'sfx' | 'warning';
 
@@ -17,6 +20,8 @@ type MusicLayer = 'pad' | 'lead' | 'harp' | 'brass' | 'perc' | 'ostinato';
 
 /** Seconds the radio ducks the score so a line always reads. */
 const DUCK_TIME = 1.05;
+/** Seconds the score stays under the lance beam — it should own the mix. */
+const LANCE_DUCK_TIME = 2.4;
 /** Scheduler wake-up. The lookahead must stay comfortably above this. */
 const SCORE_TICK_MS = 90;
 const SCORE_LOOKAHEAD = 0.85;
@@ -33,7 +38,10 @@ function isAudioContextAvailable(): boolean {
 
 /**
  * Fully procedural audio: engine drone, wind, weapons, damage and — new in
- * v0.3 — an arranged generative score plus a layered impact vocabulary.
+ * v0.3 — an arranged generative score plus a layered impact vocabulary. v0.5
+ * adds the flare launch (a mortar, three cartridges and a burning candle) and
+ * the boss attack vocabulary, each attack telegraphing itself with its own
+ * mechanical signature.
  *
  * The score is scheduled a bar at a time against `AudioContext.currentTime`
  * rather than fired from timers, so the pad, the lead line and the taiko stay
@@ -71,6 +79,14 @@ export class AudioEngine {
   private scoreBarTime = 0;
   private duckUntil = 0;
   private nextAlarmAt = 0;
+
+  /* --- v0.5 boss attacks --------------------------------------------- */
+  /**
+   * Output of the telegraph cue currently sounding. The sustained layers of a
+   * cue connect here instead of straight to a bus, so the phase change that
+   * ends the warning can also end the sound.
+   */
+  private telegraphGain: GainNode | null = null;
 
   private level = 0;
   private data: Uint8Array<ArrayBuffer> | null = null;
@@ -302,6 +318,9 @@ export class AudioEngine {
       case 'damage':
         this.playDamage(event.bearing, event.amount);
         break;
+      case 'hull-impact':
+        this.playHullImpact(event.damage);
+        break;
       case 'warning':
         if (event.warning.kind === 'missile' || event.warning.kind === 'boss') {
           this.beep(720, 0.08, 0.03, 'sawtooth');
@@ -314,6 +333,16 @@ export class AudioEngine {
       case 'boss-intro':
         this.playBossIntro();
         this.duckUntil = this.ctx.currentTime + 2.6;
+        break;
+      case 'boss-attack':
+        // Only the telegraph is a cue of its own. The later phases cut it, so a
+        // charge that is interrupted cannot whine over whatever ended it.
+        if (event.phase === 'telegraph') this.playBossTelegraph(event.id);
+        else this.cutTelegraph();
+        break;
+      case 'boss-lance-fire':
+        this.playLanceFire();
+        this.duckUntil = this.ctx.currentTime + LANCE_DUCK_TIME;
         break;
       case 'boss-shield-down':
         this.playExplosion(0.8, true, 1800);
@@ -354,6 +383,9 @@ export class AudioEngine {
         break;
       case 'assist-engaged':
         this.beep(1500, 0.035, 0.014, 'sine', 'warning');
+        break;
+      case 'view-change':
+        this.playViewChange(event.mode === 'chase');
         break;
       case 'stall':
         this.noiseBurst(0.34, 'bandpass', 460, 0.05, 'warning');
@@ -1131,6 +1163,25 @@ export class AudioEngine {
     return this.ctx;
   }
 
+  /**
+   * Send a finished voice to its bus, optionally placed in the stereo field.
+   * StereoPanner is not in every implementation, so the pan is a bonus rather
+   * than a requirement — a centred voice is always the safe fallback.
+   */
+  private connectOut(node: AudioNode, bus: BusName, pan = 0): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const destination = this.buses[bus] ?? this.master ?? ctx.destination;
+    if (pan !== 0 && typeof ctx.createStereoPanner === 'function') {
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = Math.max(-1, Math.min(1, pan));
+      node.connect(panner);
+      panner.connect(destination);
+      return;
+    }
+    node.connect(destination);
+  }
+
   private beep(
     frequency: number,
     duration: number,
@@ -1149,15 +1200,7 @@ export class AudioEngine {
     gain.gain.setValueAtTime(gainValue, now);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     osc.connect(gain);
-    const destination = this.buses[bus] ?? this.master ?? ctx.destination;
-    if (pan !== 0 && typeof ctx.createStereoPanner === 'function') {
-      const panner = ctx.createStereoPanner();
-      panner.pan.value = Math.max(-1, Math.min(1, pan));
-      gain.connect(panner);
-      panner.connect(destination);
-    } else {
-      gain.connect(destination);
-    }
+    this.connectOut(gain, bus, pan);
     osc.start(now);
     osc.stop(now + duration + 0.02);
   }
@@ -1168,6 +1211,7 @@ export class AudioEngine {
     frequency: number,
     gainValue: number,
     bus: BusName,
+    pan = 0,
   ): void {
     const ctx = this.ensureContext();
     if (!ctx || !this.noiseBuffer) return;
@@ -1182,7 +1226,7 @@ export class AudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     source.connect(filter);
     filter.connect(gain);
-    gain.connect(this.buses[bus] ?? this.master ?? ctx.destination);
+    this.connectOut(gain, bus, pan);
     source.start(now);
     source.stop(now + duration + 0.05);
   }
@@ -1208,15 +1252,7 @@ export class AudioEngine {
     gain.gain.setValueAtTime(gainValue, now);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     osc.connect(gain);
-    const destination = this.buses[bus] ?? this.master ?? ctx.destination;
-    if (pan !== 0 && typeof ctx.createStereoPanner === 'function') {
-      const panner = ctx.createStereoPanner();
-      panner.pan.value = Math.max(-1, Math.min(1, pan));
-      gain.connect(panner);
-      panner.connect(destination);
-    } else {
-      gain.connect(destination);
-    }
+    this.connectOut(gain, bus, pan);
     osc.start(now);
     osc.stop(now + duration + 0.03);
   }
@@ -1422,10 +1458,529 @@ export class AudioEngine {
     this.schedule(420, () => this.beep(58, 2.8, 0.07, 'triangle', 'music'));
   }
 
-  private playFlare(): void {
-    for (let index = 0; index < 3; index += 1) {
-      this.schedule(index * 45, () => this.noiseBurst(0.08, 'highpass', 2400, 0.05, 'sfx'));
+  /* ------------------------------------------------------------------ */
+  /* v0.5 boss attacks                                                   */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Telegraph cue for a boss attack. Each attack gets its own mechanical
+   * signature so the answer can be picked from audio alone: the ordinary
+   * missile warning is a single 720 Hz saw, and none of these four repeats it.
+   *
+   * The length comes from the attack book, so retuning a warning window cannot
+   * desync the cue that fills it.
+   */
+  private playBossTelegraph(id: BossAttackId): void {
+    const seconds = BOSS_ATTACKS[id].telegraph;
+    switch (id) {
+      case 'lance':
+        this.playLanceCharge(seconds);
+        break;
+      case 'pulse':
+        this.playPulseCharge(seconds);
+        break;
+      case 'salvo':
+        this.playSalvoTelegraph(seconds);
+        break;
+      case 'ciws':
+        this.playCiwsSpinUp(seconds);
+        break;
     }
+  }
+
+  /**
+   * Open the shared output for a telegraph cue and register it as the live one.
+   * Every sustained layer of the cue connects here rather than straight to a
+   * bus, so the phase change that ends the warning can also end the sound.
+   */
+  private beginTelegraph(bus: BusName): GainNode | null {
+    const ctx = this.ensureContext();
+    if (!ctx) return null;
+    this.cutTelegraph();
+    const out = ctx.createGain();
+    out.gain.value = 1;
+    out.connect(this.buses[bus] ?? this.master ?? ctx.destination);
+    this.telegraphGain = out;
+    return out;
+  }
+
+  /**
+   * Drop whatever telegraph is sounding. Each layer was given a stop time of
+   * its own, so fading the shared gain is enough — and it keeps a 3 s lance
+   * charge from whining over the shot that ended it.
+   */
+  private cutTelegraph(): void {
+    const ctx = this.ctx;
+    const out = this.telegraphGain;
+    this.telegraphGain = null;
+    if (!ctx || !out) return;
+    const now = ctx.currentTime;
+    out.gain.cancelScheduledValues(now);
+    out.gain.setValueAtTime(Math.max(0.0001, out.gain.value), now);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+  }
+
+  /**
+   * `lance`: a capacitor filling. The whine has to be audible from the first
+   * frame and rise the whole way, because for three seconds it *is* the
+   * countdown — slow at first, then visibly accelerating into the shot.
+   */
+  private playLanceCharge(seconds: number): void {
+    const ctx = this.ensureContext();
+    const out = this.beginTelegraph('warning');
+    if (!ctx || !out) return;
+    const now = ctx.currentTime;
+    const release = 0.06;
+
+    // A saw through a resonant low-pass that opens as the charge builds.
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.Q.value = 6;
+    filter.frequency.setValueAtTime(320, now);
+    filter.frequency.exponentialRampToValueAtTime(5400, now + seconds);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.016, now + seconds * 0.6);
+    gain.gain.exponentialRampToValueAtTime(0.055, now + seconds);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + seconds + release);
+    filter.connect(gain);
+    gain.connect(out);
+
+    const whine = ctx.createOscillator();
+    whine.type = 'sawtooth';
+    whine.frequency.setValueAtTime(78, now);
+    whine.frequency.exponentialRampToValueAtTime(1180, now + seconds);
+    whine.connect(filter);
+    whine.start(now);
+    whine.stop(now + seconds + release + 0.05);
+
+    // A pure sine an octave up gives the rise a pitch the ear can track, and
+    // only arrives near the end, when the capacitor is nearly full.
+    const tone = ctx.createOscillator();
+    tone.type = 'sine';
+    tone.frequency.setValueAtTime(156, now);
+    tone.frequency.exponentialRampToValueAtTime(2360, now + seconds);
+    const toneGain = ctx.createGain();
+    toneGain.gain.setValueAtTime(0.0001, now);
+    toneGain.gain.exponentialRampToValueAtTime(0.02, now + seconds);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, now + seconds + release);
+    tone.connect(toneGain);
+    toneGain.connect(out);
+    tone.start(now);
+    tone.stop(now + seconds + release + 0.05);
+  }
+
+  /**
+   * `pulse`: the shield ring charging. A resonant sweep for the capacitor and a
+   * clock that accelerates towards the discharge — here the tempo, not the
+   * pitch, is the warning.
+   */
+  private playPulseCharge(seconds: number): void {
+    const ctx = this.ensureContext();
+    const out = this.beginTelegraph('warning');
+    if (!ctx || !out) return;
+    const now = ctx.currentTime;
+
+    // A saw tracked by a narrow band-pass is the classic ring-modulated sweep.
+    const ring = ctx.createOscillator();
+    ring.type = 'sawtooth';
+    ring.frequency.setValueAtTime(96, now);
+    ring.frequency.exponentialRampToValueAtTime(300, now + seconds);
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.Q.value = 14;
+    band.frequency.setValueAtTime(420, now);
+    band.frequency.exponentialRampToValueAtTime(2600, now + seconds);
+    const ringGain = ctx.createGain();
+    ringGain.gain.setValueAtTime(0.0001, now);
+    ringGain.gain.exponentialRampToValueAtTime(0.05, now + seconds * 0.7);
+    ringGain.gain.exponentialRampToValueAtTime(0.07, now + seconds);
+    ringGain.gain.exponentialRampToValueAtTime(0.0001, now + seconds + 0.05);
+    ring.connect(band);
+    band.connect(ringGain);
+    ringGain.connect(out);
+    ring.start(now);
+    ring.stop(now + seconds + 0.1);
+
+    // The clock: each interval is 82% of the last, so the pattern itself counts
+    // down and the player feels the discharge arriving.
+    let offset = seconds * 0.1;
+    let interval = seconds * 0.24;
+    let guard = 0;
+    while (offset < seconds - 0.04 && guard < 12) {
+      guard += 1;
+      this.schedule(offset * 1000, () =>
+        this.noiseBurst(0.02, 'bandpass', 2400, 0.026, 'warning'),
+      );
+      offset += interval;
+      interval *= 0.82;
+    }
+  }
+
+  /**
+   * `salvo`: the VLS cells. Actuators charging under the deck, hatch motors
+   * clunking open and a low two-tone launch alarm — the busiest of the four
+   * cues, because four of these turn into missiles.
+   */
+  private playSalvoTelegraph(seconds: number): void {
+    const ctx = this.ensureContext();
+    const out = this.beginTelegraph('warning');
+    if (!ctx || !out) return;
+    const now = ctx.currentTime;
+
+    // The hydraulic bed: the only sustained layer, and the one a cut takes.
+    const whine = ctx.createOscillator();
+    whine.type = 'triangle';
+    whine.frequency.setValueAtTime(96, now);
+    whine.frequency.linearRampToValueAtTime(132, now + seconds);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 700;
+    filter.Q.value = 1.4;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.03, now + 0.05);
+    gain.gain.setValueAtTime(0.03, now + seconds - 0.22);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + seconds);
+    whine.connect(filter);
+    filter.connect(gain);
+    gain.connect(out);
+    whine.start(now);
+    whine.stop(now + seconds + 0.05);
+
+    /* Hatches: three mechanical clunks, low and dry, on the sfx bus — they are
+       hardware moving, not an alarm. */
+    for (const [index, fraction] of [0, 0.19, 0.38].entries()) {
+      this.schedule(fraction * seconds * 1000, () => {
+        this.noiseBurst(0.1, 'lowpass', 400 + Math.random() * 90, 0.07, 'sfx');
+        this.toneDrop(150, 52 + index * 6, 0.18, 0.05, 'square', 'sfx');
+        this.beep(360 - index * 30, 0.13, 0.013, 'triangle', 'sfx');
+      });
+    }
+
+    /* Alarm: low two-tone whoops, below the 720 Hz missile beep so the two
+       never blur together. */
+    for (const fraction of [0.1, 0.45, 0.72]) {
+      this.schedule(fraction * seconds * 1000, () => {
+        this.beep(330, 0.12, 0.03, 'sawtooth', 'warning');
+        this.schedule(130, () => this.beep(247, 0.15, 0.026, 'sawtooth', 'warning'));
+      });
+    }
+  }
+
+  /**
+   * `ciws`: a motor catching. A barrel cluster spooling up under a stutter of
+   * dry mechanical ticks that speeds up — deliberately rattly, and pitched high
+   * and irregular so it never reads as the player's own cannon.
+   */
+  private playCiwsSpinUp(seconds: number): void {
+    const ctx = this.ensureContext();
+    const out = this.beginTelegraph('warning');
+    if (!ctx || !out) return;
+    const now = ctx.currentTime;
+
+    const motor = ctx.createOscillator();
+    motor.type = 'sawtooth';
+    motor.frequency.setValueAtTime(58, now);
+    motor.frequency.exponentialRampToValueAtTime(240, now + seconds);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.Q.value = 4;
+    filter.frequency.setValueAtTime(240, now);
+    filter.frequency.exponentialRampToValueAtTime(1400, now + seconds);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.05, now + seconds * 0.8);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + seconds + 0.05);
+    motor.connect(filter);
+    filter.connect(gain);
+    gain.connect(out);
+    motor.start(now);
+    motor.stop(now + seconds + 0.1);
+
+    // The stutter: intervals shrink as the barrels come up to rate, and the
+    // ticks alternate sides like the two mounts picking up the track.
+    let offset = 0;
+    let interval = seconds * 0.3;
+    let guard = 0;
+    while (offset < seconds - 0.03 && guard < 10) {
+      guard += 1;
+      const pan = guard % 2 === 0 ? -0.35 : 0.35;
+      const bite = 900 + Math.random() * 500 + (offset / seconds) * 1400;
+      this.schedule(offset * 1000, () => {
+        this.noiseBurst(0.028, 'bandpass', bite, 0.03, 'warning', pan);
+        this.toneDrop(220, 90, 0.05, 0.018, 'square', 'warning', pan);
+      });
+      offset += interval;
+      interval *= 0.72;
+    }
+  }
+
+  /**
+   * The spinal lance firing: a sub drop you feel, a bright roar with a fast
+   * attack that lasts as long as the beam burns, and the muzzle's metallic
+   * ring. The event carries the muzzle and the axis, but the lance is always
+   * fired at the player, so it is authored as a point-blank event rather than
+   * panned or distance-attenuated like a flyby.
+   */
+  private playLanceFire(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const bus = this.buses.sfx ?? this.master ?? ctx.destination;
+
+    // Pressure wave, not the beam: deep, quick and gone before the roar.
+    this.toneDrop(150, 24, 2.2, 0.16, 'sine', 'sfx');
+    this.toneDrop(72, 16, 2.6, 0.1, 'triangle', 'sfx');
+
+    const roar = ctx.createBufferSource();
+    roar.buffer = this.noiseBuffer;
+    roar.loop = true;
+    roar.loopStart = Math.random() * 1.4;
+    roar.loopEnd = roar.loopStart + 0.5;
+    const shape = ctx.createBiquadFilter();
+    shape.type = 'bandpass';
+    shape.Q.value = 0.7;
+    shape.frequency.setValueAtTime(3600, now);
+    shape.frequency.exponentialRampToValueAtTime(520, now + 1.9);
+    const roarGain = ctx.createGain();
+    roarGain.gain.setValueAtTime(0.0001, now);
+    roarGain.gain.exponentialRampToValueAtTime(0.3, now + 0.025); // fast attack
+    roarGain.gain.setValueAtTime(0.3, now + 1);
+    roarGain.gain.exponentialRampToValueAtTime(0.0001, now + 2);
+    roar.connect(shape);
+    shape.connect(roarGain);
+    roarGain.connect(bus);
+    roar.start(now);
+    roar.stop(now + 2.1);
+
+    // The white-hot core: a high band that survives the low sweep.
+    const core = ctx.createBufferSource();
+    core.buffer = this.noiseBuffer;
+    core.loop = true;
+    core.loopStart = Math.random() * 1.4;
+    core.loopEnd = core.loopStart + 0.5;
+    const coreFilter = ctx.createBiquadFilter();
+    coreFilter.type = 'highpass';
+    coreFilter.frequency.value = 4800;
+    const coreGain = ctx.createGain();
+    coreGain.gain.setValueAtTime(0.0001, now);
+    coreGain.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
+    coreGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+    core.connect(coreFilter);
+    coreFilter.connect(coreGain);
+    coreGain.connect(bus);
+    core.start(now);
+    core.stop(now + 1.3);
+
+    // Muzzle ring, then the smaller panel answer to one side.
+    this.playMetalRing(now, 240, 1.8, 0.06, 'sfx');
+    this.playMetalRing(now + 0.04, 620, 1.1, 0.03, 'sfx', 0.3);
+  }
+
+  /**
+   * Inharmonic metallic ring. Struck metal does not sit on a harmonic series,
+   * so the partials are deliberately unmusical and the upper ones die first —
+   * that is the difference between a hull ringing and a synth chord.
+   */
+  private playMetalRing(
+    at: number,
+    base: number,
+    duration: number,
+    level: number,
+    bus: BusName,
+    pan = 0,
+  ): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(level, at);
+    out.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    for (const [index, ratio] of [1, 1.87, 2.63, 4.06].entries()) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = base * ratio * (1 + (Math.random() - 0.5) * 0.03);
+      const partial = ctx.createGain();
+      const partialDuration = duration * (1 - index * 0.17);
+      partial.gain.setValueAtTime(1 / (1 + index * 0.8), at);
+      partial.gain.exponentialRampToValueAtTime(0.0001, at + partialDuration);
+      osc.connect(partial);
+      partial.connect(out);
+      osc.start(at);
+      osc.stop(at + partialDuration + 0.05);
+    }
+    this.connectOut(out, bus, pan);
+  }
+
+  /**
+   * Countermeasure launch. A flare is four sounds, not one: the mortar kicking
+   * the cartridges out of the dispenser, the cartridges igniting, the magnesium
+   * burning for well over a second and the whole thing falling away behind the
+   * aircraft.
+   *
+   * The burn is the signature — the old three-click version read as a UI blip
+   * rather than as a physical object leaving the airframe, which is why it is
+   * built on the audio clock and left to outlive the pops by ~1.5 s.
+   */
+  private playFlare(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    /* 1 ── dispenser thunk. The mortar is airframe structure, so its body rides
+       the engine bus with the afterburner; the pyrotechnics are sfx. */
+    this.noiseBurst(0.16, 'lowpass', 520, 0.1, 'engine');
+    this.toneDrop(168, 44, 0.24, 0.08, 'sine', 'engine');
+    this.noiseBurst(0.035, 'bandpass', 2600, 0.03, 'sfx'); // breech slamming shut
+
+    /* 2 ── three cartridges. They alternate sides — the aircraft carries them on
+       both shoulders — and each is detuned, because they are separate objects. */
+    let offset = 45;
+    for (let index = 0; index < 3; index += 1) {
+      const pan = (index % 2 === 0 ? -1 : 1) * (0.26 + Math.random() * 0.24);
+      this.schedule(offset, () => this.playFlarePop(pan));
+      offset += 40 + Math.random() * 30;
+    }
+
+    /* 3 & 4 ── burn and tail are scheduled against `currentTime`, not a timer:
+       they are the longest layers and must not drift against the pops. */
+    const burn = 1.2 + Math.random() * 0.6;
+    const tail = 0.55 + Math.random() * 0.3;
+    this.playFlareBurn(now + 0.06, burn);
+    this.playFlareFall(now + burn * 0.62, tail);
+  }
+
+  /** One cartridge leaving the tube: bright, metallic and a little off-centre. */
+  private playFlarePop(pan: number): void {
+    const detune = 1 + (Math.random() - 0.5) * 0.16;
+    // Case + igniter charge: a short bright band, then the shell ringing as it
+    // tumbles. Both sit above the hiss so they cut through it.
+    this.noiseBurst(0.07, 'bandpass', 3200 * detune, 0.05, 'sfx', pan);
+    this.noiseBurst(0.02, 'highpass', 5200 * detune, 0.028, 'sfx', pan);
+    this.toneDrop(1500 * detune, 430, 0.18, 0.026, 'triangle', 'sfx', pan);
+  }
+
+  /**
+   * The burning candle. A noise voice through a band-pass whose centre
+   * frequency slides *down* as the flare burns out, under a slow gain decay and
+   * a shallow tremolo. That downward sweep, long after the pops are gone, is
+   * what separates a burning countermeasure from a hiss or a click.
+   */
+  private playFlareBurn(at: number, duration: number): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.noiseBuffer) return;
+
+    const source = ctx.createBufferSource();
+    source.buffer = this.noiseBuffer;
+    source.loop = true;
+    source.loopStart = Math.random() * 1.4;
+    source.loopEnd = source.loopStart + 0.5;
+    const flame = ctx.createBiquadFilter();
+    flame.type = 'bandpass';
+    flame.Q.value = 0.85;
+    flame.frequency.setValueAtTime(4200, at);
+    flame.frequency.exponentialRampToValueAtTime(560, at + duration);
+    const envelope = ctx.createGain();
+    envelope.gain.setValueAtTime(0.0001, at);
+    envelope.gain.exponentialRampToValueAtTime(0.055, at + 0.05);
+    envelope.gain.exponentialRampToValueAtTime(0.02, at + duration * 0.6);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+
+    // Tremolo lives on its own gain stage so the flicker can never push the
+    // envelope itself negative on the way down to silence.
+    const flicker = ctx.createGain();
+    flicker.gain.value = 1;
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 8 + Math.random() * 6;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 0.22;
+    lfo.connect(lfoGain);
+    lfoGain.connect(flicker.gain);
+    lfo.start(at);
+    lfo.stop(at + duration);
+
+    source.connect(flame);
+    flame.connect(envelope);
+    envelope.connect(flicker);
+    this.connectOut(flicker, 'sfx');
+    source.start(at);
+    source.stop(at + duration + 0.05);
+
+    // A thin bright band above it for the flame front. It rides the same
+    // flicker, so both layers breathe together.
+    const sizzle = ctx.createBufferSource();
+    sizzle.buffer = this.noiseBuffer;
+    sizzle.loop = true;
+    sizzle.loopStart = Math.random() * 1.4;
+    sizzle.loopEnd = sizzle.loopStart + 0.5;
+    const sizzleFilter = ctx.createBiquadFilter();
+    sizzleFilter.type = 'highpass';
+    sizzleFilter.frequency.setValueAtTime(6000, at);
+    sizzleFilter.frequency.exponentialRampToValueAtTime(2400, at + duration);
+    const sizzleGain = ctx.createGain();
+    sizzleGain.gain.setValueAtTime(0.0001, at);
+    sizzleGain.gain.exponentialRampToValueAtTime(0.016, at + 0.08);
+    sizzleGain.gain.exponentialRampToValueAtTime(0.0001, at + duration * 0.85);
+    sizzle.connect(sizzleFilter);
+    sizzleFilter.connect(sizzleGain);
+    sizzleGain.connect(flicker);
+    sizzle.start(at);
+    sizzle.stop(at + duration + 0.05);
+  }
+
+  /**
+   * The tail. The candle is behind the aircraft by now, so it loses its highs
+   * and its pitch at the same time: a cheap doppler image, which is what makes
+   * the flare read as leaving rather than as simply stopping.
+   */
+  private playFlareFall(at: number, duration: number): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.noiseBuffer) return;
+
+    const source = ctx.createBufferSource();
+    source.buffer = this.noiseBuffer;
+    source.loop = true;
+    source.loopStart = Math.random() * 1.4;
+    source.loopEnd = source.loopStart + 0.5;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.value = 1.2;
+    filter.frequency.setValueAtTime(1400, at);
+    filter.frequency.exponentialRampToValueAtTime(240, at + duration);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.026, at + duration * 0.18);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    source.connect(filter);
+    filter.connect(gain);
+
+    const bus = this.buses.sfx ?? this.master ?? ctx.destination;
+    if (typeof ctx.createStereoPanner === 'function') {
+      const panner = ctx.createStereoPanner();
+      panner.pan.setValueAtTime(-0.15, at);
+      panner.pan.linearRampToValueAtTime(-0.5, at + duration);
+      gain.connect(panner);
+      panner.connect(bus);
+    } else {
+      gain.connect(bus);
+    }
+    source.start(at);
+    source.stop(at + duration + 0.05);
+
+    // The falling pitch of it, quiet enough to stay under the hiss.
+    const tone = ctx.createOscillator();
+    tone.type = 'sine';
+    tone.frequency.setValueAtTime(430, at);
+    tone.frequency.exponentialRampToValueAtTime(170, at + duration);
+    const toneGain = ctx.createGain();
+    toneGain.gain.setValueAtTime(0.0001, at);
+    toneGain.gain.exponentialRampToValueAtTime(0.012, at + duration * 0.2);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    tone.connect(toneGain);
+    toneGain.connect(gain);
+    tone.start(at);
+    tone.stop(at + duration + 0.05);
   }
 
   private playDamage(bearing = 0, amount = 8): void {
@@ -1435,8 +1990,42 @@ export class AudioEngine {
     this.toneDrop(190, 62, 0.26, 0.05 + clamp01(amount / 20) * 0.05, 'sawtooth', 'warning', pan);
   }
 
+  /**
+   * Something big and metallic just hit the airframe — the boss ramming, not a
+   * round. Heavy low noise for the crush, a hard crack for the contact and an
+   * inharmonic ring for the structure: the ring is what makes it read as hull
+   * rather than as another explosion.
+   */
+  private playHullImpact(damage: number): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const weight = clamp01(damage / 45);
+    const now = ctx.currentTime;
+
+    this.noiseBurst(0.5 + weight * 0.5, 'lowpass', 340 + weight * 300, 0.15 + weight * 0.1, 'sfx');
+    this.toneDrop(160, 32, 0.5, 0.1 + weight * 0.06, 'sine', 'sfx');
+    this.noiseBurst(0.05, 'highpass', 2400, 0.06, 'sfx');
+    this.playMetalRing(now, 190 + Math.random() * 70, 1.4, 0.045 + weight * 0.03, 'sfx');
+
+    // Panels shedding after the hit, so the crush has a tail.
+    this.schedule(140 + Math.random() * 80, () =>
+      this.noiseBurst(0.22, 'bandpass', 1800 + Math.random() * 900, 0.03, 'sfx'),
+    );
+  }
+
   private playRadioSquelch(): void {
     this.noiseBurst(0.07, 'bandpass', 1500, 0.022, 'warning');
+  }
+
+  /**
+   * Camera change. Deliberately the smallest voice in the engine — a UI
+   * confirmation, not an alert — rising into chase and falling back to the
+   * cockpit, so the two directions are distinguishable without looking.
+   */
+  private playViewChange(chase: boolean): void {
+    const [first, second] = chase ? [980, 1460] : [1460, 980];
+    this.beep(first, 0.045, 0.02, 'sine', 'warning');
+    this.schedule(60, () => this.beep(second, 0.06, 0.018, 'sine', 'warning'));
   }
 
   private playBossIntro(): void {

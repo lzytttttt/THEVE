@@ -254,18 +254,32 @@ export function BossBar({ boss, className }: BossBarProps) {
   const ratio = boss.maxHp > 0 ? Math.max(0, boss.hp / boss.maxHp) : 0;
   const stageLabel =
     boss.hp <= 0 ? 'DESTROYED' : boss.stage === 3 ? 'CORE EXPOSED' : boss.stage === 2 ? 'SHIELD FAILURE' : 'SHIELD LAYER';
+  const attack = boss.hp > 0 ? boss.attack : null;
   return (
-    <div className={cx('tv-boss', boss.hp <= 0 && 'is-destroyed', className)}>
+    <div
+      className={cx(
+        'tv-boss',
+        boss.hp <= 0 && 'is-destroyed',
+        attack && `is-attacking is-${attack.phase}`,
+        className,
+      )}
+      data-stage={boss.stage}
+    >
       <div className="tv-boss__head">
         <span className="tv-boss__warning">
           <IconWarning size={12} /> MASSIVE CONTACT
         </span>
-        <span className="tv-boss__stage tv-mono">{stageLabel}</span>
+        <span className="tv-boss__stage tv-mono">
+          {boss.stageCode} · {boss.distance < 1000 ? `${Math.round(boss.distance)}m` : formatRange(boss.distance)}
+        </span>
       </div>
       <div className="tv-boss__name">
         <strong>{boss.nameEn}</strong>
         <span>{boss.nameZh}</span>
         <em className="tv-mono">{boss.callsign}</em>
+        <span className={cx('tv-boss__condition', boss.tooClose && 'is-close')}>
+          {boss.hp <= 0 ? stageLabel : boss.tooClose ? '护盾电容充能中' : boss.stageLabel}
+        </span>
       </div>
       <div
         className="tv-boss__bar"
@@ -279,6 +293,41 @@ export function BossBar({ boss, className }: BossBarProps) {
         <span className="tv-boss__ticks" aria-hidden="true" />
         <span className="tv-boss__pct tv-mono">{Math.round(ratio * 100)}%</span>
       </div>
+      {attack ? (
+        <div
+          className={cx('tv-boss__attack', `is-${attack.severity}`)}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="tv-boss__attack-head">
+            <span className="tv-boss__attack-code tv-mono">{attack.code}</span>
+            <strong>{attack.labelZh}</strong>
+            <span className="tv-boss__attack-en tv-mono">{attack.labelEn}</span>
+            <em className="tv-mono">
+              {attack.phase === 'telegraph'
+                ? `T-${attack.remaining.toFixed(1)}`
+                : attack.phase === 'active'
+                  ? 'LIVE'
+                  : 'CLEAR'}
+            </em>
+          </div>
+          <span className="tv-boss__attack-bar" aria-hidden="true">
+            <i
+              className={cx('tv-boss__attack-progress', `is-${attack.phase}`)}
+              style={{ width: `${Math.round(attack.progress * 100)}%` }}
+            />
+          </span>
+          <div className="tv-boss__attack-counter">
+            <span className="tv-mono">
+              {attack.counterCode ? `${attack.counterCode} · ` : ''}
+              应对
+            </span>
+            <p>{attack.counterZh}</p>
+          </div>
+        </div>
+      ) : boss.nextIn !== null && boss.hp > 0 && boss.nextIn < 6 ? (
+        <p className="tv-boss__standby tv-mono">NEXT ATTACK IN {boss.nextIn.toFixed(1)}s</p>
+      ) : null}
       <div className="tv-boss__weakpoints">
         {boss.weakpoints.map((weakpoint) => (
           <span

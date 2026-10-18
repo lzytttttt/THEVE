@@ -69,6 +69,23 @@ export interface AutoPilotThreat {
   impactIn: number;
 }
 
+/**
+ * v0.5: an area hazard — the spinal lance's corridor, the shield pulse's
+ * radius. A missile is beaten by a flare or a decoy manoeuvre; a gun axis is
+ * not, it is beaten by *leaving*, so the engine hands the performer the escape
+ * heading directly instead of pretending the beam is a missile.
+ */
+export interface AutoPilotHazard {
+  id: string;
+  label: string;
+  /** Signed yaw error in radians to a heading that leaves the danger. */
+  yawError: number;
+  /** Signed pitch error in radians to a safe attitude. */
+  pitchError: number;
+  /** 0..1; below `HAZARD_AWARE` the performer keeps flying its pass. */
+  urgency: number;
+}
+
 export interface AutoPilotWorld {
   dt: number;
   elapsed: number;
@@ -89,6 +106,8 @@ export interface AutoPilotWorld {
   activeProgress: number;
   contacts: AutoPilotContact[];
   threats: AutoPilotThreat[];
+  /** v0.5: the dreadnought's charged attacks, as an escape heading. */
+  hazard: AutoPilotHazard | null;
   selectedId: string | null;
   lock: { state: LockState['state']; progress: number; targetId: string | null; distance: number };
   weapons: { selected: WeaponId; missiles: number; gunAmmo: number; flares: number };
@@ -241,6 +260,12 @@ const THREAT_PANIC = 1250;
 const THREAT_PANIC_SECONDS = 3;
 const THREAT_AWARE = 1900;
 const FLARE_RANGE = 950;
+/**
+ * v0.5: how urgent a boss hazard has to be before the performer abandons its
+ * attack run. Half a second after the lance telegraph starts, a human is
+ * already rolling out of the corridor; the autopilot should be too.
+ */
+const HAZARD_AWARE = 0.24;
 /** Quiet sky: how far the nearest bandit must be before showing off. */
 const SHOWCASE_CLEARANCE = 2400;
 /** Airborne fighters this close make the dreadnought the wrong target. */
@@ -706,8 +731,19 @@ export function solveAutoPilot(
   }
 
   const beaming = Boolean(threat && urgent && Math.abs(threat.bearing) < 55);
+  // v0.5: a charged boss attack is not something a flare can fix. When one is
+  // winding up, the escape heading wins over the attack run — the same priority
+  // a human gives "get off the gun axis" over "get the shot".
+  const hazard = world.hazard;
+  const hazardActive = Boolean(hazard && hazard.urgency >= HAZARD_AWARE);
   let aim: Aim;
-  if (memory.overshootTimer > 0 && contact && !beaming) {
+  if (hazardActive && hazard) {
+    setMode(memory, 'defend');
+    memory.calloutCode = 'EVADE';
+    memory.calloutLabelZh = hazard.label;
+    memory.calloutLabelEn = 'BREAK';
+    aim = aimAt(world, hazard.yawError, hazard.pitchError);
+  } else if (memory.overshootTimer > 0 && contact && !beaming) {
     // Wings level, nose on the horizon, firewall — a clean extension.
     aim = flyLevel(world, clamp(world.altitude, SOFT_FLOOR + 200, 9000));
   } else if (contact && !beaming) {

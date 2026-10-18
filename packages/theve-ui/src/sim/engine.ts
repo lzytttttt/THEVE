@@ -48,6 +48,28 @@ import {
   type EnemyProfile,
 } from './enemies';
 import {
+  BOSS_ANCHOR,
+  BOSS_ATTACKS,
+  BOSS_HULL_RADIUS,
+  BOSS_LANCE_MUZZLE,
+  BOSS_STAGE_LABEL,
+  BOSS_TURRETS,
+  BOSS_VISUAL_IDLE,
+  BOSS_VLS,
+  bossAnchor,
+  bossHitTest,
+  bossHullPushOut,
+  bossSegmentHit,
+  lanceHits,
+  lanceOffset,
+  lanceRadius,
+  type BossAttackDefinition,
+  type BossAttackId,
+  type BossAttackPhase,
+  type BossPose,
+  type BossVisualState,
+} from './boss';
+import {
   autoPilotCondition,
   autoPilotShown,
   AUTO_MODE_LABEL,
@@ -55,6 +77,7 @@ import {
   resetAutoPilotMemory,
   solveAutoPilot,
   type AutoPilotContact,
+  type AutoPilotHazard,
   type AutoPilotMemory,
   type AutoPilotThreat,
   type AutoPilotWorld,
@@ -64,6 +87,7 @@ import type {
   AssistSettings,
   AudioTelemetry,
   AutoPilotHud,
+  BossAttackHud,
   BossHud,
   CockpitSnapshot,
   CombatFeedback,
@@ -94,16 +118,23 @@ import type {
   SimListener,
   TutorialStepId,
   Vec3,
+  ViewMode,
   WarningState,
   WaveHud,
   WeakpointKey,
   WeaponId,
   WingmanHud,
 } from './types';
+import { isViewMode, VIEW_LABEL } from './types';
 
 const MISSILE_MAX = 10;
 const GUN_MAX = 900;
 const FLARE_MAX = 6;
+/** v0.5: cartridges per press, their burn time, and the decoy radius. */
+const FLARE_SALVO = 4;
+const FLARE_LIFE = 3.4;
+const FLARE_FALL = 16;
+const FLARE_SEDUCE_RANGE = 130;
 const LOCK_CONE_DEG = 12;
 const LOCK_RANGE = 3600;
 const LOCK_TIME = 0.9;
@@ -157,6 +188,19 @@ const BOSS_WEAKPOINT_LABEL: Record<WeakpointKey, string> = {
   shieldR: 'SHIELD NODE B',
   core: 'REACTOR CORE',
 };
+/**
+ * v0.5 hit volumes. v0.4 tested a gun shot against a pure cone and a missile
+ * against a flat 62 m sphere, so a 26 m shield node on a drifting dreadnought
+ * was a lottery and a fighter's wingspan was imaginary. Every weapon now fuses
+ * against the target's real radius, and the boss carries a compound collider.
+ */
+const GUN_RADIUS_PAD = 1;
+const MISSILE_FUSE_BASE = 34;
+const MISSILE_FUSE_PAD = 14;
+/** How much room the player gets before the dreadnought's hull is solid. */
+const HULL_GRACE = 12;
+/** Longest single-frame shove out of the hull, in metres. */
+const HULL_PUSH_MAX = 30;
 
 /* --- v0.3 impact feedback ------------------------------------------- */
 /** How long the HUD keeps a hit marker up. */
@@ -171,6 +215,7 @@ const COMBO_WINDOW = 2;
 const EFFECT_BUDGET = 190;
 /** Effects that may be recycled early when the budget is full, cheapest first. */
 const EFFECT_PRIORITY: Record<EffectKind, number> = {
+  vapour: 0,
   spark: 0,
   smoke: 1,
   tracer: 2,
@@ -179,7 +224,9 @@ const EFFECT_PRIORITY: Record<EffectKind, number> = {
   flak: 5,
   flash: 6,
   explosion: 7,
+  pulse: 7,
   shield: 8,
+  beam: 8,
   shockwave: 9,
 };
 /** Ambient battlefield flak cadence per phase, in seconds. */
@@ -194,8 +241,7 @@ const AMBIENCE_INTERVAL: Partial<Record<MissionPhase, [number, number]>> = {
  */
 const RESUPPLY_REPAIR = 38;
 
-/** v0.4: the wingman gets a different line for every airframe class. */
-const KILL_LINES: Record<EnemyId, string[]> = {
+/** v0.4: the wingman gets a different line for every airframe class. */const KILL_LINES: Record<EnemyId, string[]> = {
   scout: ['侦察机清掉了，他跑得再快也没你快。', '那个轻家伙散了，雷达干净一点。'],
   interceptor: ['VESPER 被击落，干得漂亮。', '确认击落，雷达上少了一个光点。'],
   heavy: ['重装机解体了！那身装甲也没扛住。', '好，机炮压制解除了 — 刚才那阵弹雨真够呛。'],
@@ -209,6 +255,26 @@ interface FlakStrike {
   at: number;
   offset: Vec3;
 }
+
+/**
+ * v0.5: the first time the dreadnought uses an attack, AWACS explains it. The
+ * HUD telegraph carries the counter on every use; this is the in-fiction beat
+ * that teaches the mechanic once.
+ */
+const BOSS_ATTACK_CALLOUT: Record<BossAttackId, string> = {
+  ciws: 'LEVIATHAN 近防炮开始拦截 — 不要正对舰体直线进入，做侧向掠袭。',
+  salvo: '垂直发射井开启！四发齐射 — 放热焰弹，别硬吃。',
+  pulse: '护盾电容过载 — 它在蓄能！离开一千米内，快！',
+  lance: '主炮炮口开启，这是照射武器！横向脱离炮轴，不要留在它的准线上。',
+};
+
+/** And the wingman heckles it every time after that. */
+const BOSS_ATTACK_WINGMAN: Record<BossAttackId, string> = {
+  ciws: '弹幕太密了，队长 — 换条进航线！',
+  salvo: '又来一轮齐射，热焰弹！',
+  pulse: '它又在充能，拉开距离！',
+  lance: '主炮在转 — 离开那条线！',
+};
 
 /** A scheduled background burst that decorates the sky but never damages. */
 interface AmbientStrike {
@@ -337,6 +403,42 @@ export class CockpitEngine {
   private flak: FlakStrike | null = null;
   private droneTimer = 0;
 
+  /* --- v0.5 boss director -------------------------------------------- */
+  /** The attack currently running, or null between attacks. */
+  private bossAttackId: BossAttackId | null = null;
+  private bossAttackPhase: BossAttackPhase = 'idle';
+  /** Seconds left in the current phase. */
+  private bossAttackTimer = 0;
+  /** Seconds until the director may pick a new attack. */
+  private bossAttackCooldown = 0;
+  /** Per-attack cooldowns and use counts, so nothing chains. */
+  private bossAttackReady = new Map<BossAttackId, number>();
+  private bossAttackUses = new Map<BossAttackId, number>();
+  /** Direction the spinal lance locked onto when it finished charging. */
+  private lanceAxis: Vec3 | null = null;
+  /** Seconds the player has spent inside the shield umbrella. */
+  private loiter = 0;
+  /** 0..1 radial shockwave readout for the renderer. */
+  private pulseGlow = 0;
+  /** Turret heat, drives the CIWS muzzle flashes and the tracer density. */
+  private turretHeat = 0;
+  private salvoFired = 0;
+  /** Announced-every-attack-once flags, for the AWACS callouts. */
+  private bossSeenAttacks = new Set<BossAttackId>();
+  private hullScrapeCooldown = 0;
+
+  /**
+   * v0.5 view mode. It lives on the engine rather than in React state because
+   * the three.js layer reads it every frame, and it has to survive the pause
+   * menu, a restart and a page reload.
+   */
+  private view: ViewMode = 'cockpit';
+  /**
+   * Camera shake the simulation asks for directly (beam fire, hull strikes).
+   * The renderer drains it through `drainShake`.
+   */
+  private pendingShake = 0;
+
   private kills = 0;
   private score = 0;
   private stats: MissionStats = emptyStats();
@@ -453,6 +555,19 @@ export class CockpitEngine {
     this.flakTimer = 0;
     this.flak = null;
     this.droneTimer = 0;
+    this.bossAttackId = null;
+    this.bossAttackPhase = 'idle';
+    this.bossAttackTimer = 0;
+    this.bossAttackCooldown = 0;
+    this.bossAttackReady.clear();
+    this.bossAttackUses.clear();
+    this.bossSeenAttacks.clear();
+    this.lanceAxis = null;
+    this.loiter = 0;
+    this.pulseGlow = 0;
+    this.turretHeat = 0;
+    this.salvoFired = 0;
+    this.hullScrapeCooldown = 0;
     this.kills = 0;
     this.score = 0;
     this.stats = emptyStats();
@@ -805,6 +920,7 @@ export class CockpitEngine {
         : 0,
       contacts,
       threats,
+      hazard: this.bossHazard(),
       selectedId: this.selectedId,
       lock: {
         state: this.getLockState().state,
@@ -1087,6 +1203,20 @@ export class CockpitEngine {
     this.completeTutorial('fire');
   }
 
+  /**
+   * v0.5 flare. Three changes make the countermeasure behave like one:
+   *
+   * 1. Four cartridges instead of three, thrown wide, each with its own drift
+   *    and gravity, so the cloud spreads behind the aircraft instead of hanging
+   *    in the sky as a single sprite.
+   * 2. A continuous seduction check in `updateMissiles`: any hostile round that
+   *    passes within `FLARE_SEDUCE_RANGE` of a burning cartridge re-targets onto
+   *    it. v0.4 only rolled the dice at launch, which meant a flare fired a
+   *    second late did nothing at all.
+   * 3. The launch itself is loud — a bright bloom, an ejection puff and a
+   *    burning trail — because the effect has to be legible from the outside
+   *    camera as well as from the cockpit.
+   */
   flare(): void {
     if (!this.canUseWeapons() || this.flareCooldown > 0) return;
     if (this.weapons.flares <= 0) {
@@ -1095,16 +1225,29 @@ export class CockpitEngine {
     }
     this.weapons.flares -= 1;
     this.flareCooldown = 2.6;
+    const forward = forwardFromAngles(this.flight.yaw, this.flight.pitch);
+    const right = rightFromYaw(this.flight.yaw);
     const base = add(
-      add(this.flight.position, scale(forwardFromAngles(this.flight.yaw, this.flight.pitch), -18)),
-      { x: 0, y: -14, z: 0 },
+      add(this.flight.position, scale(forward, -16)),
+      { x: 0, y: -6, z: 0 },
     );
+    // The cartridges keep a *large* share of the aircraft's velocity, and that
+    // is a gameplay decision rather than a physical one. A flare that
+    // immediately falls two hundred metres astern only decoys a missile chasing
+    // from behind; one fired head-on passes the aircraft where the flare is not.
+    // Holding the cloud near the airframe is what lets a single press of `F`
+    // answer both geometries — and the AUTO ACE soak runs say the same thing:
+    // at a third of this value the performer was shot down seven times in a
+    // sortie it now clears in three minutes.
+    const inherited = scale(this.travelDir, this.flight.speed * 0.32);
     const flares: SimEntity[] = [];
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < FLARE_SALVO; index += 1) {
+      const side = index % 2 === 0 ? -1 : 1;
+      const spread = 16 + index * 6;
       const offset = {
-        x: randomRange(-14, 14),
-        y: randomRange(-10, 4),
-        z: randomRange(-14, 14),
+        x: side * spread + randomRange(-6, 6),
+        y: randomRange(-9, 3),
+        z: randomRange(-12, 8),
       };
       const flare = this.makeEntity({
         kind: 'flare',
@@ -1116,12 +1259,35 @@ export class CockpitEngine {
         maxHp: 1,
         radius: 2,
         label: 'FLARE',
+        yaw: this.flight.yaw,
+        roll: randomRange(-3, 3),
       });
-      flare.life = 2.6;
-      flare.maxLife = 2.6;
+      flare.drift = {
+        x: inherited.x + side * randomRange(6, 16),
+        y: inherited.y - randomRange(4, 12),
+        z: inherited.z + randomRange(-6, 6),
+      };
+      flare.life = FLARE_LIFE;
+      flare.maxLife = FLARE_LIFE;
       flares.push(flare);
       this.entities.push(flare);
+      // The launch plume is modest on purpose: four cartridges going off 20 m
+      // from the camera would otherwise white out the whole outside view.
+      this.spawnEffect('flash', flare.position, { scale: 9, color: 'amber', life: 0.2 });
+      this.spawnEffect('muzzle', flare.position, {
+        scale: 4,
+        color: 'amber',
+        life: 0.16,
+        velocity: scale(right, side * 12),
+      });
+      this.spawnEffect('smoke', flare.position, {
+        scale: 5,
+        color: 'white',
+        life: 1.5,
+        velocity: { x: side * 8, y: 10, z: 0 },
+      });
     }
+    // The immediate break: a round already in the air loses the aircraft.
     for (const entity of this.entities) {
       if (entity.kind !== 'missile' || !entity.alive || entity.team !== 'hostile') continue;
       if (entity.missile?.targetId !== 'player') continue;
@@ -1166,6 +1332,75 @@ export class CockpitEngine {
         'LEVIATHAN 进入射程。护盾节点是突破口，LUMEN 1，看你的了。',
       );
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.5 camera                                                         */
+  /* ------------------------------------------------------------------ */
+
+  getView(): ViewMode {
+    return this.view;
+  }
+
+  setView(mode: ViewMode): ViewMode {
+    if (!isViewMode(mode) || mode === this.view) return this.view;
+    this.view = mode;
+    this.addComms(
+      'TACS-8',
+      'system',
+      mode === 'chase'
+        ? `外部视角接通 — ${VIEW_LABEL.chase.zh}，可以看到本机姿态与机动。`
+        : `回到 ${VIEW_LABEL.cockpit.zh} — 全息 HUD 与座舱框恢复。`,
+    );
+    this.emit({ type: 'view-change', mode });
+    return this.view;
+  }
+
+  toggleView(): ViewMode {
+    return this.setView(this.view === 'cockpit' ? 'chase' : 'cockpit');
+  }
+
+  /** Consumed by the renderer once per frame; returns and clears the request. */
+  drainShake(): number {
+    const value = this.pendingShake;
+    this.pendingShake = 0;
+    return value;
+  }
+
+  /**
+   * Everything the three.js layer needs that is not already in the entity list:
+   * the current camera, the control surfaces' deflection and the manoeuvre the
+   * airframe is flying. Cheap enough to call every frame.
+   */
+  getViewTelemetry(): {
+    mode: ViewMode;
+    maneuver: ManeuverId | null;
+    maneuverProgress: number;
+    control: ControlInput;
+    gLoad: number;
+    speed: number;
+    afterburner: boolean;
+    postStall: boolean;
+    airbrake: boolean;
+    highG: boolean;
+    stall: boolean;
+  } {
+    const maneuver = this.activeManeuver();
+    return {
+      mode: this.view,
+      maneuver,
+      maneuverProgress: this.scripted
+        ? clamp(this.scripted.time / MANEUVERS[this.scripted.id].duration, 0, 1)
+        : 0,
+      control: { ...this.input },
+      gLoad: this.flight.gLoad,
+      speed: this.flight.speed,
+      afterburner: this.flight.afterburner,
+      postStall: this.flight.postStall,
+      airbrake: this.flight.airbrake,
+      highG: this.flight.highG,
+      stall: this.flight.speed <= (scriptedFloor(this.scripted) ?? SPEED_FLOOR) + 3,
+    };
   }
 
   setProjection(id: string, projection: Projection): void {
@@ -1563,9 +1798,17 @@ export class CockpitEngine {
       { x: 0, y: -3, z: 0 },
     );
     const target = this.findGunTarget();
-    const end = target
-      ? target.point
-      : add(origin, scale(forward, 1600));
+    let end = target ? target.point : add(origin, scale(forward, 1600));
+    // A burst that misses every weak point but lands on the hull is not a miss
+    // — it is the armour telling the player to aim somewhere else.
+    let armour: { part: string; point: Vec3 } | null = null;
+    if (!target) {
+      const stop = this.bossArmourStop(origin, end);
+      if (stop) {
+        end = stop.point;
+        armour = { part: stop.part, point: stop.point };
+      }
+    }
     this.spawnEffect('tracer', origin, { to: end, scale: 1, color: 'amber', life: 0.12 });
     // Muzzle flash at the gun port — a one-frame bloom that makes the burst read.
     this.spawnEffect('muzzle', origin, {
@@ -1574,11 +1817,26 @@ export class CockpitEngine {
       life: 0.07,
       velocity: scale(forward, 40),
     });
+    if (armour) {
+      this.spawnEffect('spark', armour.point, {
+        scale: 2.4,
+        color: 'cyan',
+        life: 0.18,
+        velocity: scale(forward, -30),
+      });
+      if (Math.random() < 0.25) this.reportArmourHit(armour.point, armour.part);
+    }
     if (target) {
       this.applyDamage(target.entity, 5 + Math.random() * 3, 'player', false, 'gun');
     }
   }
 
+  /**
+   * v0.5 gunnery. The cone is the *aiming* gate; the target's own radius is
+   * added to it, so a 60 m reactor at 2 km is a real target rather than a
+   * fraction of a degree. Without this the dreadnought's weak points were
+   * effectively unhittable with the gun while the HUD drew a lock box on them.
+   */
   private findGunTarget(): GunTarget | null {
     const forward = forwardFromAngles(this.flight.yaw, this.flight.pitch);
     let best: GunTarget | null = null;
@@ -1589,7 +1847,8 @@ export class CockpitEngine {
       const range = Math.sqrt(toTarget.x ** 2 + toTarget.y ** 2 + toTarget.z ** 2);
       if (range > GUN_RANGE) continue;
       const angle = angleBetween(forward, normalize(toTarget)) * RAD;
-      if (angle > GUN_CONE_DEG) continue;
+      const allowance = Math.atan2(entity.radius * GUN_RADIUS_PAD, Math.max(1, range)) * RAD;
+      if (angle > GUN_CONE_DEG + allowance) continue;
       const score = angle * 10 + range / 250;
       if (score < bestScore) {
         bestScore = score;
@@ -1818,6 +2077,7 @@ export class CockpitEngine {
         1.3,
       );
       const forward = forwardFromAngles(entity.yaw, entity.pitch);
+      const from = entity.position;
       entity.position = add(entity.position, scale(forward, entity.missile.speed * dt));
       entity.roll = Math.sin(this.elapsed * 9) * 0.3;
 
@@ -1827,7 +2087,44 @@ export class CockpitEngine {
         this.emit({ type: 'flyby', team: entity.team, distance: closing });
       }
 
-      if (distance(entity.position, targetPoint) < 62) {
+      // v0.5: the dreadnought is a body, not a point. A round that reaches the
+      // armour detonates on it instead of tunnelling through to the weak point
+      // behind — so the attack geometry is something the player has to solve.
+      const armour = this.bossArmourStop(from, entity.position);
+      if (armour) {
+        entity.alive = false;
+        if (entity.team === 'player') {
+          this.stats.missilesHit += 1;
+          this.reportArmourHit(armour.point, armour.part);
+        } else {
+          this.spawnEffect('explosion', armour.point, { scale: 14, color: 'amber', life: 0.7 });
+          this.spawnEffect('flash', armour.point, { scale: 60, color: 'white', life: 0.18 });
+          this.spawnSparks(armour.point, 'amber', 7, 1.1);
+        }
+        continue;
+      }
+
+      // v0.5: a burning cartridge is a better target than the airframe, so any
+      // hostile round that passes close enough to one goes for it instead. This
+      // is what makes a flare fired *at the right moment* work, rather than
+      // only a flare fired at the instant of launch.
+      if (entity.team === 'hostile' && entity.missile.targetId === 'player') {
+        const decoy = this.nearestFlare(entity.position);
+        if (decoy) {
+          entity.missile.targetId = decoy.id;
+          this.warn('missile', 'caution', 'DECOY', '热焰弹诱骗 — 导弹脱离', 1.4);
+          this.spawnEffect('spark', decoy.position, { scale: 2.6, color: 'amber', life: 0.3 });
+          continue;
+        }
+      }
+
+      // Radius-aware proximity fuse. v0.4 used a flat 62 m against the target's
+      // origin, which made a wide airframe as easy to hit as a narrow one.
+      const fuse =
+        target === 'player'
+          ? MISSILE_FUSE_BASE + MISSILE_FUSE_PAD
+          : MISSILE_FUSE_BASE + target.radius;
+      if (distance(entity.position, targetPoint) < fuse) {
         entity.alive = false;
         this.detonateMissile(entity, target);
       }
@@ -1877,10 +2174,118 @@ export class CockpitEngine {
     return entity;
   }
 
+  /* ------------------------------------------------------------------ */
+  /* v0.5 collision volume                                               */
+  /* ------------------------------------------------------------------ */
+
+  /** The hottest burning cartridge within seduction range of a point. */
+  private nearestFlare(point: Vec3): SimEntity | null {
+    let best: SimEntity | null = null;
+    let bestRange = FLARE_SEDUCE_RANGE;
+    for (const entity of this.entities) {
+      if (!entity.alive || entity.kind !== 'flare') continue;
+      const range = distance(entity.position, point);
+      if (range < bestRange) {
+        bestRange = range;
+        best = entity;
+      }
+    }
+    return best;
+  }
+
+  /** The dreadnought's compound body, for a swept weapon path. */
+  private bossArmourStop(from: Vec3, to: Vec3) {
+    const boss = this.getEntity(this.bossId);
+    if (!boss || !boss.alive) return null;
+    return bossSegmentHit(this.bossPose(boss), from, to);
+  }
+
+  /**
+   * v0.5: turn the charged boss attacks into a single escape heading for the
+   * performer. The lance asks for a hard break across its own axis; the shield
+   * pulse asks for a run out of the umbrella along the current line of sight.
+   */
+  private bossHazard(): AutoPilotHazard | null {
+    const boss = this.getEntity(this.bossId);
+    if (!boss || !boss.alive || !this.bossAttackId) return null;
+    const attack = BOSS_ATTACKS[this.bossAttackId];
+    if (this.bossAttackPhase === 'idle' || this.bossAttackPhase === 'recover') return null;
+    const flight = this.flight;
+    const telegraphing = this.bossAttackPhase === 'telegraph';
+    const progress = telegraphing
+      ? clamp(1 - this.bossAttackTimer / Math.max(0.001, attack.telegraph), 0, 1)
+      : 1;
+
+    if (attack.id === 'pulse') {
+      const range = distance(boss.position, flight.position);
+      if (range > attack.range[1] * 1.05) return null;
+      const away = normalize(sub(flight.position, boss.position));
+      const wanted = yawPitchFromDirection(away);
+      return {
+        id: 'boss-pulse',
+        label: '护盾脉冲',
+        yawError: clamp(wrapRadians(wanted.yaw - flight.yaw), -1.4, 1.4),
+        pitchError: clamp(wanted.pitch - flight.pitch, -0.35, 0.35),
+        urgency: telegraphing ? progress : 1,
+      };
+    }
+
+    if (attack.id === 'lance' && this.lanceAxis) {
+      const axis = this.lanceAxis;
+      const muzzle = this.bossLanceMuzzle(this.bossPose(boss));
+      // Only break if the airframe is actually near the corridor. A performer
+      // that abandons every attack run for the whole three-second charge spends
+      // the boss fight doing nothing but dodging a gun it was never in front of
+      // — the same "aerobatics at nothing" failure as the v0.4 orbit bug.
+      const series = bossSegmentHit(this.bossPose(boss), muzzle, this.flight.position);
+      const along =
+        (this.flight.position.x - muzzle.x) * axis.x +
+        (this.flight.position.y - muzzle.y) * axis.y +
+        (this.flight.position.z - muzzle.z) * axis.z;
+      if (along <= 0 || series) return null;
+      const offset = lanceOffset(muzzle, axis, this.flight.position);
+      if (offset > lanceRadius(along) * 3.4) return null;
+
+      const toPlayer = sub(this.flight.position, boss.position);
+      const perp = sub(toPlayer, scale(axis, along));
+      const right = rightFromYaw(this.flight.yaw);
+      const lateral = perp.x * right.x + perp.y * right.y + perp.z * right.z;
+      // Break to whichever side buys the most clearance soonest. Dead on the
+      // axis there is no such side, so the tie-break is a hard left.
+      const side = Math.abs(lateral) < 1 ? -1 : lateral >= 0 ? 1 : -1;
+      return {
+        id: 'boss-lance',
+        label: '主炮照射',
+        yawError: side * 1.35,
+        pitchError: side * 0.18,
+        // The beam only really hurts once it is live, but the performer needs
+        // the whole telegraph to fly out of a 4° corridor.
+        urgency: telegraphing ? clamp(progress * 1.6, 0, 1) : 1,
+      };
+    }
+
+    return null;
+  }
+
+  /** A round that hit the armour rather than a weak point. */
+  private reportArmourHit(point: Vec3, part: string): void {
+    this.spawnEffect('shield', point, { scale: 22, color: 'cyan', life: 0.36 });
+    this.spawnEffect('flash', point, { scale: 48, color: 'white', life: 0.16 });
+    this.spawnSparks(point, 'cyan', 6, 1.1);
+    this.emit({ type: 'shield-deflect', key: 'shieldL' });
+    this.warn('boss', 'caution', `ARMOUR · ${part}`, '装甲未穿透 — 攻击护盾节点或反应堆', 1.5);
+  }
+
+  /** Boss collider pose — kept in one place so the sim and the model agree. */
+  private bossPose(boss: SimEntity): BossPose {
+    return { position: boss.position, yaw: boss.yaw, pitch: 0, roll: boss.roll };
+  }
+
   private updateBoss(dt: number): void {
     const boss = this.getEntity(this.bossId);
     if (!boss || !boss.alive) return;
     const player = this.flight.position;
+    const pose = this.bossPose(boss);
 
     const toPlayer = sub(player, boss.position);
     const desired = yawPitchFromDirection(toPlayer);
@@ -1889,28 +2294,40 @@ export class CockpitEngine {
     );
     boss.roll = Math.sin(this.elapsed * 0.31) * 0.02;
     const forward = forwardFromAngles(boss.yaw, 0);
-    boss.position = add(boss.position, scale(forward, 4 * dt));
+    // v0.5: the dreadnought closes on the player when it is far away and holds
+    // station when it is close, so the fight cannot be run away from forever.
+    const range = distance(boss.position, player);
+    const closing = range > 5200 ? 9 : range > 3200 ? 5.5 : 3;
+    boss.position = add(boss.position, scale(forward, closing * dt));
 
     const right = rightFromYaw(boss.yaw);
     for (const entity of this.entities) {
       if (entity.kind !== 'weakpoint' || !entity.alive || !entity.weakpoint) continue;
       if (entity.weakpoint.parentId !== boss.id) continue;
-      const lateral = entity.weakpoint.key === 'shieldL' ? -520 : entity.weakpoint.key === 'shieldR' ? 520 : 0;
-      const depth = entity.weakpoint.key === 'core' ? 300 : 130;
-      const height = entity.weakpoint.key === 'core' ? -10 : 60;
+      const anchor =
+        entity.weakpoint.key === 'shieldL'
+          ? BOSS_ANCHOR.shieldL
+          : entity.weakpoint.key === 'shieldR'
+            ? BOSS_ANCHOR.shieldR
+            : BOSS_ANCHOR.core;
       entity.position = add(
-        add(boss.position, scale(right, lateral)),
-        add(scale(forward, depth), { x: 0, y: height, z: 0 }),
+        add(boss.position, scale(right, anchor.x)),
+        add(scale(forward, -anchor.z), { x: 0, y: anchor.y, z: 0 }),
       );
       entity.yaw = boss.yaw;
       entity.roll = boss.roll;
     }
 
+    // The hull is solid now. Keep the player out of it and charge them for the
+    // mistake — this is the single biggest readability fix of the encounter:
+    // the dreadnought can no longer be flown through like a hologram.
+    this.resolveHullContact(boss, pose, dt);
+
     if (this.phase !== 'boss' || this.bossDefeated) return;
 
     this.flakTimer -= dt;
     if (this.flakTimer <= 0) {
-      this.flakTimer = randomRange(3.4, 5.2);
+      this.flakTimer = randomRange(4.6, 6.8);
       this.flak = {
         at: this.elapsed + 2,
         offset: {
@@ -1936,12 +2353,12 @@ export class CockpitEngine {
         scale: 20,
         distance: near,
       });
-      if (Math.random() < 0.28) this.damagePlayer(8, impact);
+      if (Math.random() < 0.32) this.damagePlayer(8, impact);
     }
 
     this.droneTimer -= dt;
     if (this.droneTimer <= 0) {
-      this.droneTimer = randomRange(14, 18);
+      this.droneTimer = randomRange(18, 24);
       const droneCount = this.entities.filter(
         (entity) => entity.alive && entity.kind === 'fighter' && entity.team === 'hostile',
       ).length;
@@ -1953,8 +2370,427 @@ export class CockpitEngine {
       const shieldsUp = this.getWeakpoints().some(
         (weakpoint) => weakpoint.weakpoint?.key !== 'core' && weakpoint.alive,
       );
-      if (droneCount < 3 && shieldsUp) this.spawnDrone(boss);
+      if (droneCount < 2 && shieldsUp) this.spawnDrone(boss);
     }
+
+    this.updateBossAttacks(boss, pose, dt);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v0.5 boss attacks                                                   */
+  /* ------------------------------------------------------------------ */
+
+  /** 1 = both shields up, 2 = one down, 3 = reactor exposed. */
+  private bossStage(): 1 | 2 | 3 {
+    const weakpoints = this.getWeakpoints();
+    const shieldsAlive = weakpoints.filter(
+      (entity) => entity.weakpoint?.key !== 'core' && entity.alive,
+    ).length;
+    const coreExposed = weakpoints.some(
+      (entity) => entity.weakpoint?.key === 'core' && entity.weakpoint.targetable,
+    );
+    return coreExposed ? 3 : shieldsAlive >= 2 ? 1 : 2;
+  }
+
+  /**
+   * The attack director. It is a small state machine — idle → telegraph →
+   * active → recover — with one rule that matters: an attack is only ever
+   * chosen when the player is *outside* its reach, and every attack carries the
+   * counter that beats it on the telegraph banner. Losing to the dreadnought
+   * should always feel like losing a decision, never like being surprised.
+   */
+  private updateBossAttacks(boss: SimEntity, pose: BossPose, dt: number): void {
+    const player = this.flight.position;
+    const range = distance(boss.position, player);
+    this.turretHeat = Math.max(0, this.turretHeat - dt * 0.8);
+    this.pulseGlow = Math.max(0, this.pulseGlow - dt * 1.4);
+
+    const active = this.bossAttackId ? BOSS_ATTACKS[this.bossAttackId] : null;
+
+    if (active) {
+      this.bossAttackTimer -= dt;
+      if (this.bossAttackPhase === 'telegraph') {
+        this.telegraphBossAttack(active, boss, pose, dt);
+        if (this.bossAttackId && this.bossAttackTimer <= 0) {
+          this.beginBossAttackActive(active, boss, pose);
+        }
+      } else if (this.bossAttackPhase === 'active') {
+        this.runBossAttack(active, boss, pose, dt);
+        if (this.bossAttackTimer <= 0) this.endBossAttack(active);
+      } else if (this.bossAttackPhase === 'recover') {
+        if (this.bossAttackTimer <= 0) {
+          this.bossAttackId = null;
+          this.bossAttackPhase = 'idle';
+          this.bossAttackCooldown = randomRange(2.6, 4.6);
+          this.emit({ type: 'boss-attack', id: active.id, phase: 'idle' });
+        }
+      }
+      return;
+    }
+
+    for (const [id, value] of Array.from(this.bossAttackReady)) {
+      if (value > 0) this.bossAttackReady.set(id, Math.max(0, value - dt));
+    }
+    this.bossAttackCooldown = Math.max(0, this.bossAttackCooldown - dt);
+
+    // Sitting inside the shield umbrella winds the capacitor up. This is the
+    // number that turns "park on its tail" into a losing plan.
+    if (range < BOSS_ATTACKS.pulse.range[1]) this.loiter += dt;
+    else this.loiter = Math.max(0, this.loiter - dt * 2);
+
+    if (this.bossAttackCooldown > 0) return;
+
+    const stage = this.bossStage();
+    const ready = (id: BossAttackId) =>
+      (this.bossAttackReady.get(id) ?? 0) <= 0 && BOSS_ATTACKS[id].fromStage <= stage;
+    const inBand = (id: BossAttackId) =>
+      range >= BOSS_ATTACKS[id].range[0] && range <= BOSS_ATTACKS[id].range[1];
+
+    let pick: BossAttackId | null = null;
+    if (this.loiter >= 2.4 && ready('pulse') && inBand('pulse')) pick = 'pulse';
+    else if (stage === 3 && ready('lance') && inBand('lance') && Math.random() < 0.72) pick = 'lance';
+    else if (ready('salvo') && inBand('salvo') && Math.random() < 0.55) pick = 'salvo';
+    else if (ready('ciws') && inBand('ciws')) pick = 'ciws';
+    else if (ready('salvo') && inBand('salvo')) pick = 'salvo';
+    else if (ready('lance') && inBand('lance')) pick = 'lance';
+
+    if (!pick) return;
+    this.beginBossAttack(pick, boss, pose);
+  }
+
+  private beginBossAttack(id: BossAttackId, boss: SimEntity, pose: BossPose): void {
+    const attack = BOSS_ATTACKS[id];
+    this.bossAttackId = id;
+    this.bossAttackPhase = 'telegraph';
+    this.bossAttackTimer = attack.telegraph;
+    this.bossAttackUses.set(id, (this.bossAttackUses.get(id) ?? 0) + 1);
+    this.salvoFired = 0;
+
+    if (id === 'lance') {
+      this.lanceAxis = normalize(sub(this.flight.position, this.bossLanceMuzzle(pose)));
+    }
+    if (id === 'ciws') this.turretHeat = 1;
+
+    this.warn('boss', attack.severity, attack.code, `${attack.labelZh} — ${attack.counterZh}`, attack.telegraph + 0.6);
+    this.emit({ type: 'boss-attack', id, phase: 'telegraph' });
+
+    // One AWACS line per attack, the first time it is used, so the mechanic is
+    // taught in-fiction rather than only on the HUD.
+    if (!this.bossSeenAttacks.has(id)) {
+      this.bossSeenAttacks.add(id);
+      this.say(this.scenario.awacsCallsign, 'awacs', BOSS_ATTACK_CALLOUT[id]);
+    } else if (Math.random() < 0.4) {
+      this.say(this.scenario.wingmanCallsign, 'wingman', BOSS_ATTACK_WINGMAN[id]);
+    }
+    if (boss.hp > 0) this.spawnEffect('flash', boss.position, { scale: 90, color: 'amber', life: 0.3 });
+  }
+
+  private telegraphBossAttack(
+    attack: BossAttackDefinition,
+    boss: SimEntity,
+    pose: BossPose,
+    dt: number,
+  ): void {
+    const total = Math.max(0.001, attack.telegraph);
+    const charge = clamp(1 - this.bossAttackTimer / total, 0, 1);
+
+    if (attack.id === 'lance') {
+      // The lance tracks the player for the first 70% of the charge, then the
+      // axis is committed and burns bright. That is the window the player has
+      // to leave the corridor — and the reason the attack is survivable.
+      const muzzle = this.bossLanceMuzzle(pose);
+      if (charge < 0.7) {
+        const wanted = normalize(sub(this.flight.position, muzzle));
+        this.lanceAxis = normalize({
+          x: lerp(this.lanceAxis?.x ?? wanted.x, wanted.x, 1 - Math.exp(-2.4 * dt)),
+          y: lerp(this.lanceAxis?.y ?? wanted.y, wanted.y, 1 - Math.exp(-2.4 * dt)),
+          z: lerp(this.lanceAxis?.z ?? wanted.z, wanted.z, 1 - Math.exp(-2.4 * dt)),
+        });
+      }
+      if (charge > 0.5 && Math.random() < 0.5) {
+        this.spawnEffect('spark', muzzle, {
+          scale: randomRange(1.4, 3.2),
+          color: 'cyan',
+          life: 0.4,
+          velocity: scale(this.lanceAxis ?? forwardFromAngles(boss.yaw, 0), randomRange(-20, 30)),
+        });
+      }
+    } else if (attack.id === 'pulse') {
+      this.pulseGlow = charge;
+      if (Math.random() < 0.5) {
+        const angle = randomRange(0, Math.PI * 2);
+        const radius = 260 + charge * 900;
+        this.spawnEffect(
+          'spark',
+          add(boss.position, {
+            x: Math.cos(angle) * radius,
+            y: randomRange(-90, 130),
+            z: Math.sin(angle) * radius,
+          }),
+          { scale: randomRange(1.2, 2.4), color: 'cyan', life: 0.3 },
+        );
+      }
+    } else if (attack.id === 'salvo') {
+      for (const cell of BOSS_VLS) {
+        this.spawnEffect('flash', bossAnchor(pose, cell), {
+          scale: 26 + charge * 60,
+          color: 'amber',
+          life: 0.14,
+        });
+      }
+    } else {
+      this.turretHeat = Math.max(this.turretHeat, charge);
+      for (const mount of BOSS_TURRETS) {
+        this.spawnEffect('muzzle', bossAnchor(pose, mount), { scale: 3, color: 'amber', life: 0.08 });
+      }
+    }
+  }
+
+  private beginBossAttackActive(attack: BossAttackDefinition, boss: SimEntity, pose: BossPose): void {
+    this.bossAttackPhase = 'active';
+    this.bossAttackTimer = attack.active;
+    this.emit({ type: 'boss-attack', id: attack.id, phase: 'active' });
+
+    if (attack.id === 'pulse') {
+      const origin = boss.position;
+      this.pulseGlow = 1;
+      this.spawnEffect('pulse', origin, { scale: 420, color: 'cyan', life: 0.85 });
+      this.spawnEffect('shockwave', origin, { scale: 340, color: 'cyan', life: 0.9 });
+      this.spawnEffect('flash', origin, { scale: 260, color: 'white', life: 0.24 });
+      this.emit({ type: 'explosion', position: origin, scale: 40, distance: distance(origin, this.flight.position) });
+      const range = distance(origin, this.flight.position);
+      if (range < BOSS_ATTACKS.pulse.range[1]) {
+        this.damagePlayer(attack.damage, origin);
+        this.shovePlayer(origin, 260);
+        this.warn('boss', 'critical', 'PULSE HIT', '被护盾脉冲命中 — 脱离近距', 2.2);
+      } else {
+        this.warn('system', 'caution', 'PULSE CLEAR', '已脱离脉冲范围 — 保持距离', 1.6);
+      }
+    }
+    if (attack.id === 'lance' && this.lanceAxis) {
+      const muzzle = this.bossLanceMuzzle(pose);
+      this.spawnEffect('beam', muzzle, {
+        to: add(muzzle, scale(this.lanceAxis, 4600)),
+        scale: 30,
+        color: 'red',
+        life: attack.active,
+      });
+      this.spawnEffect('flash', muzzle, { scale: 220, color: 'white', life: 0.3 });
+      this.emit({ type: 'boss-lance-fire', origin: muzzle, axis: this.lanceAxis });
+      this.shakeOnly(1.1);
+    }
+  }
+
+  private runBossAttack(
+    attack: BossAttackDefinition,
+    boss: SimEntity,
+    pose: BossPose,
+    dt: number,
+  ): void {
+    const player = this.flight.position;
+    if (attack.id === 'ciws') {
+      this.turretHeat = 1;
+      const forward = forwardFromAngles(boss.yaw, 0);
+      const toPlayer = normalize(sub(player, boss.position));
+      const angle = angleBetween(forward, toPlayer) * RAD;
+      const range = distance(boss.position, player);
+      // The guns only bear on the forward hemisphere: get behind it and the
+      // close-in battery stops being a reason to stay away.
+      if (angle < 112 && range < attack.range[1]) {
+        for (const mount of BOSS_TURRETS) {
+          this.spawnEffect('tracer', bossAnchor(pose, mount), {
+            to: player,
+            scale: 1,
+            color: 'amber',
+            life: 0.1,
+          });
+        }
+        if (Math.random() < 0.55) {
+          this.damagePlayer((attack.damage / attack.active) * dt * 1.15, boss.position);
+        }
+      }
+      return;
+    }
+
+    if (attack.id === 'salvo') {
+      const want = Math.min(4, Math.floor((1 - this.bossAttackTimer / attack.active) * 4) + 1);
+      if (this.salvoFired < want) {
+        this.salvoFired += 1;
+        const cell = BOSS_VLS[(this.salvoFired - 1 + BOSS_VLS.length) % BOSS_VLS.length]!;
+        this.fireBossMissile(bossAnchor(pose, cell));
+      }
+      return;
+    }
+
+    if (attack.id === 'lance') {
+      const axis = this.lanceAxis;
+      if (!axis) return;
+      const muzzle = this.bossLanceMuzzle(pose);
+      // The beam sweeps a couple of degrees across its firing window, so
+      // standing perfectly still on the edge of the corridor is not a save.
+      const sweep = Math.sin((1 - this.bossAttackTimer / attack.active) * Math.PI) * 0.045;
+      const swept = normalize({
+        x: axis.x + Math.cos(boss.yaw) * sweep,
+        y: axis.y,
+        z: axis.z - Math.sin(boss.yaw) * sweep,
+      });
+      this.lanceAxis = swept;
+      if (lanceHits(muzzle, swept, player)) {
+        this.damagePlayer((attack.damage / attack.active) * dt * 1.05, muzzle);
+        this.spawnEffect('spark', player, { scale: 3.4, color: 'red', life: 0.2 });
+      }
+      if (Math.random() < 0.7) {
+        const along = randomRange(600, 4200);
+        this.spawnEffect('spark', add(muzzle, scale(swept, along)), {
+          scale: randomRange(2, 4.5),
+          color: 'red',
+          life: 0.22,
+        });
+      }
+      this.shakeOnly(dt * 6);
+      return;
+    }
+
+    // Pulse is a single detonation; the active window is only its afterglow.
+    this.pulseGlow = Math.max(0, this.bossAttackTimer / attack.active);
+  }
+
+  private endBossAttack(attack: BossAttackDefinition): void {
+    this.bossAttackReady.set(
+      attack.id,
+      randomRange(attack.cooldown[0], attack.cooldown[1]),
+    );
+    this.bossAttackPhase = 'recover';
+    this.bossAttackTimer = 0.45;
+    if (attack.id === 'lance') this.lanceAxis = null;
+    if (attack.id === 'pulse') this.loiter = 0;
+    this.emit({ type: 'boss-attack', id: attack.id, phase: 'recover' });
+  }
+
+  private bossLanceMuzzle(pose: BossPose): Vec3 {
+    return bossAnchor(pose, BOSS_LANCE_MUZZLE);
+  }
+
+  /** A radar-guided round from the vertical launch cells. */
+  private fireBossMissile(origin: Vec3): void {
+    const direction = normalize(sub(this.flight.position, origin));
+    const angles = yawPitchFromDirection(direction);
+    const missile = this.makeEntity({
+      kind: 'missile',
+      team: 'hostile',
+      callsign: 'LEVIATHAN VLS',
+      position: add(origin, scale(direction, 10)),
+      yaw: angles.yaw,
+      pitch: angles.pitch,
+      speed: 540,
+      hp: 1,
+      maxHp: 1,
+      radius: 3,
+      label: 'LEVIATHAN',
+    });
+    missile.missile = {
+      targetId: 'player',
+      speed: 540,
+      life: 9,
+      maxLife: 9,
+      owner: 'hostile',
+      whooshed: false,
+    };
+    missile.life = 9;
+    missile.maxLife = 9;
+    this.entities.push(missile);
+    this.spawnEffect('flash', origin, { scale: 70, color: 'amber', life: 0.18 });
+    this.spawnEffect('smoke', origin, {
+      scale: 8,
+      color: 'white',
+      life: 1.1,
+      velocity: { x: 0, y: 22, z: 0 },
+    });
+    this.emit({ type: 'missile-fire', team: 'hostile', id: missile.id });
+  }
+
+  /** A directional shove, used by the shield pulse and by hull contact. */
+  private shovePlayer(origin: Vec3, power: number): void {
+    const away = normalize(sub(this.flight.position, origin));
+    const before = this.flight.yaw;
+    const push = add(this.flight.position, scale(away, power));
+    this.flight.position = push;
+    // Nudge the nose away from the blast so the shove reads on the camera too.
+    const wanted = yawPitchFromDirection(away);
+    this.flight.yaw = wrapRadians(before + clamp(wrapRadians(wanted.yaw - before), -0.22, 0.22));
+    this.flight.rollRate += randomRange(-0.4, 0.4);
+  }
+
+  private shakeOnly(amount: number): void {
+    this.pendingShake = Math.min(2, this.pendingShake + amount);
+  }
+
+  /**
+   * v0.5 collision volume. The dreadnought is a compound body, not a point:
+   * fly into it and you scrape 45% off the airframe and get shoved clear, while
+   * a gun pass over the hull sparks off the armour instead of passing through.
+   *
+   * The shove is clamped rather than applied in full. A shallow clip — the case
+   * that actually happens at 250 m/s — resolves in one frame either way, but a
+   * player who somehow ends up in the middle of the keel would otherwise be
+   * teleported four hundred metres sideways by a single "nearest exit" solve.
+   * Clamped, they get bounced hard along the escape direction and walk out over
+   * the next few frames, which is what a collision should look like.
+   */
+  private resolveHullContact(boss: SimEntity, pose: BossPose, dt: number): void {
+    this.hullScrapeCooldown = Math.max(0, this.hullScrapeCooldown - dt);
+    const push = bossHullPushOut(pose, this.flight.position, HULL_GRACE);
+    if (!push) return;
+
+    const span =
+      Math.abs(push.correction.x) + Math.abs(push.correction.y) + Math.abs(push.correction.z);
+    const factor = span > HULL_PUSH_MAX ? HULL_PUSH_MAX / span : 1;
+    this.flight.position = add(this.flight.position, scale(push.correction, factor));
+    this.flight.position.y = clamp(this.flight.position.y, GROUND_FLOOR, CEILING);
+
+    if (this.hullScrapeCooldown > 0) return;
+    this.hullScrapeCooldown = 1.6;
+    const impact = this.flight.position;
+    this.spawnEffect('explosion', impact, { scale: 18, color: 'amber', life: 0.5 });
+    this.spawnSparks(impact, 'amber', 12, 1.4);
+    this.spawnEffect('flash', impact, { scale: 90, color: 'white', life: 0.16 });
+    this.damagePlayer(45, boss.position);
+    this.warn('boss', 'critical', `HULL STRIKE · ${push.part}`, '撞击舰体 — 立即脱离', 2.6);
+    this.emit({ type: 'hull-impact', part: push.part, damage: 45 });
+    this.shakeOnly(1.4);
+  }
+
+  /** Where the collision volume sits, for the renderer's near-miss cues. */
+  getBossVisualState(): BossVisualState {
+    const boss = this.getEntity(this.bossId);
+    if (!boss || !boss.alive) return BOSS_VISUAL_IDLE;
+    const weakpoints = this.getWeakpoints();
+    const shieldsUp = weakpoints.some(
+      (entity) => entity.weakpoint?.key !== 'core' && entity.alive,
+    );
+    const coreExposed = weakpoints.some(
+      (entity) => entity.weakpoint?.key === 'core' && entity.weakpoint.targetable,
+    );
+    const attack = this.bossAttackId ? BOSS_ATTACKS[this.bossAttackId] : null;
+    const total =
+      attack === null
+        ? 1
+        : this.bossAttackPhase === 'telegraph'
+          ? Math.max(0.001, attack.telegraph)
+          : Math.max(0.001, attack.active);
+    return {
+      active: true,
+      alive: true,
+      stage: this.bossStage(),
+      shieldsUp,
+      coreExposed,
+      attackId: this.bossAttackId,
+      phase: this.bossAttackPhase,
+      charge: attack ? clamp(1 - this.bossAttackTimer / total, 0, 1) : 0,
+      pulse: this.pulseGlow,
+      turretHeat: this.turretHeat,
+      lanceAxis: this.lanceAxis,
+    };
   }
 
   private updateMissionState(dt: number): void {
@@ -2106,6 +2942,7 @@ export class CockpitEngine {
       ai: null,
       missile: null,
       weakpoint: null,
+      drift: null,
       life: 0,
       maxLife: 0,
     };
@@ -2327,7 +3164,10 @@ export class CockpitEngine {
       speed: 5,
       hp: 600,
       maxHp: 600,
-      radius: 260,
+      // v0.5: the radius now describes the *collision volume* and the building
+      // the player sees, not a fudge factor. The compound collider in
+      // `sim/boss.ts` is the authority; this is its bounding sphere.
+      radius: BOSS_HULL_RADIUS,
       variant: 'dreadnought',
     });
     boss.ai = createAIState({ mode: 'drift', cooldown: 0, seed: 7, gunCooldown: 99 });
@@ -2335,6 +3175,7 @@ export class CockpitEngine {
     this.bossId = boss.id;
 
     for (const key of ['shieldL', 'shieldR', 'core'] as WeakpointKey[]) {
+      const anchor = BOSS_ANCHOR[key];
       const weakpoint = this.makeEntity({
         kind: 'weakpoint',
         team: 'hostile',
@@ -2345,7 +3186,10 @@ export class CockpitEngine {
         speed: 0,
         hp: BOSS_WEAKPOINT_HP[key],
         maxHp: BOSS_WEAKPOINT_HP[key],
-        radius: key === 'core' ? 38 : 26,
+        // v0.5 gave the nodes a body worth aiming at: 26 m across a 3.6 km lock
+        // range was a pixel, so the gun literally could not hit what the HUD
+        // was pointing at.
+        radius: key === 'core' ? 62 : 48,
         variant: 'dreadnought',
       });
       weakpoint.weakpoint = {
@@ -2354,6 +3198,10 @@ export class CockpitEngine {
         label: BOSS_WEAKPOINT_LABEL[key],
         targetable: key !== 'core',
       };
+      weakpoint.position = add(
+        add(boss.position, scale(rightFromYaw(boss.yaw), anchor.x)),
+        add(scale(forwardFromAngles(boss.yaw, 0), -anchor.z), { x: 0, y: anchor.y, z: 0 }),
+      );
       this.entities.push(weakpoint);
     }
   }
@@ -2822,9 +3670,19 @@ export class CockpitEngine {
     }
     this.effects = this.effects.filter((effect) => effect.life > 0);
     for (const entity of this.entities) {
-      if (entity.kind === 'flare') {
-        entity.life -= dt;
-        if (entity.life <= 0) entity.alive = false;
+      if (entity.kind !== 'flare') continue;
+      entity.life -= dt;
+      if (entity.life <= 0) {
+        entity.alive = false;
+        continue;
+      }
+      // Cartridges are not flown: they tumble, fall and slow down.
+      if (entity.drift) {
+        entity.position = add(entity.position, scale(entity.drift, dt));
+        entity.drift.y -= FLARE_FALL * dt;
+        entity.drift.x *= Math.max(0, 1 - 1.6 * dt);
+        entity.drift.z *= Math.max(0, 1 - 1.6 * dt);
+        entity.roll += dt * 5;
       }
     }
   }
@@ -3073,6 +3931,9 @@ export class CockpitEngine {
       (entity) => entity.weakpoint?.key === 'core' && entity.weakpoint.targetable,
     );
     const stage: 1 | 2 | 3 = coreExposed ? 3 : shieldsAlive === 2 ? 1 : 2;
+    const attack = this.buildBossAttackHud();
+    const pose = this.bossPose(boss);
+    const range = distance(boss.position, this.flight.position);
     return {
       id: boss.id,
       callsign: this.scenario.boss.callsign,
@@ -3081,6 +3942,17 @@ export class CockpitEngine {
       hp,
       maxHp,
       stage,
+      stageLabel: BOSS_STAGE_LABEL[stage].zh,
+      stageCode: BOSS_STAGE_LABEL[stage].code,
+      distance: range,
+      // Inside this bubble the shield capacitor is winding up, and the hull is
+      // close enough that a hard turn can put the player into it.
+      tooClose: range < 900 || bossHitTest(pose, this.flight.position, 90) !== null,
+      attack,
+      nextIn:
+        this.bossAttackId || this.phase !== 'boss'
+          ? null
+          : Math.max(0, this.bossAttackCooldown),
       weakpoints: weakpoints
         .map((entity) => ({
           key: entity.weakpoint?.key ?? 'core',
@@ -3091,6 +3963,31 @@ export class CockpitEngine {
           targetable: entity.weakpoint?.targetable ?? false,
         }))
         .sort((a, b) => (a.key === 'core' ? 1 : b.key === 'core' ? -1 : a.key.localeCompare(b.key))),
+    };
+  }
+
+  private buildBossAttackHud(): BossAttackHud | null {
+    if (!this.bossAttackId || this.bossAttackPhase === 'idle') return null;
+    const attack = BOSS_ATTACKS[this.bossAttackId];
+    const total =
+      this.bossAttackPhase === 'telegraph'
+        ? Math.max(0.001, attack.telegraph)
+        : this.bossAttackPhase === 'active'
+          ? Math.max(0.001, attack.active)
+          : 0.45;
+    return {
+      id: attack.id,
+      code: attack.code,
+      labelEn: attack.labelEn,
+      labelZh: attack.labelZh,
+      counterEn: attack.counterEn,
+      counterZh: attack.counterZh,
+      counterCode: attack.counter ? MANEUVERS[attack.counter].code : null,
+      phase: this.bossAttackPhase,
+      progress: clamp(1 - this.bossAttackTimer / total, 0, 1),
+      remaining: Math.max(0, this.bossAttackTimer),
+      severity: attack.severity,
+      uses: this.bossAttackUses.get(attack.id) ?? 0,
     };
   }
 
@@ -3308,6 +4205,7 @@ export class CockpitEngine {
       operation: this.scenario.operation,
       titleEn: this.scenario.titleEn,
       titleZh: this.scenario.titleZh,
+      view: this.view,
       flight: {
         speed: this.flight.speed,
         knots: this.flight.speed * 1.94384,

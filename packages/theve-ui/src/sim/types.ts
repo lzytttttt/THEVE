@@ -4,6 +4,12 @@ export interface Vec3 {
   z: number;
 }
 
+/** v0.5 boss attack vocabulary. The attack book lives in `sim/boss.ts`. */
+export type BossAttackId = 'ciws' | 'salvo' | 'pulse' | 'lance';
+
+/** `telegraph` → warning is up, `active` → it is hurting, `recover` → cooling. */
+export type BossAttackPhase = 'idle' | 'telegraph' | 'active' | 'recover';
+
 export type MissionPhase =
   | 'idle'
   | 'boot'
@@ -25,6 +31,24 @@ export type ManeuverId =
 
 /** `sustained` follows the stick while held, `scripted` plays a timed profile. */
 export type ManeuverKind = 'sustained' | 'scripted';
+
+/**
+ * v0.5 camera. `cockpit` is the original first-person avionics view; `chase`
+ * pulls back behind the airframe so the player can watch their own aircraft
+ * (and the manoeuvres) from outside.
+ */
+export type ViewMode = 'cockpit' | 'chase';
+
+export const VIEW_ORDER: ViewMode[] = ['cockpit', 'chase'];
+
+export const VIEW_LABEL: Record<ViewMode, { code: string; zh: string; en: string }> = {
+  cockpit: { code: 'CPT', zh: '座舱视角', en: 'COCKPIT' },
+  chase: { code: 'CHS', zh: '第三人称', en: 'CHASE' },
+};
+
+export function isViewMode(value: unknown): value is ViewMode {
+  return value === 'cockpit' || value === 'chase';
+}
 
 /** Co-pilot style flight aids. All of them yield to direct pilot input. */
 export type AssistId = 'attitude' | 'steering' | 'throttle' | 'terrain';
@@ -139,6 +163,11 @@ export interface SimEntity {
   ai: AIState | null;
   missile: MissileState | null;
   weakpoint: WeakpointState | null;
+  /**
+   * v0.5: ballistic drift for entities the simulation does not fly — flares
+   * currently. `null` means the entity holds its position.
+   */
+  drift: Vec3 | null;
   life: number;
   maxLife: number;
 }
@@ -147,6 +176,10 @@ export interface SimEntity {
  * v0.3 splits the old three-effect vocabulary into readable impact language:
  * `spark` and `debris` sell a gun hit, `shield` says "wrong target", `flak`
  * builds the battlefield behind the fight and `smoke` trails a wounded airframe.
+ *
+ * v0.5 adds the three effects the boss fight and the chase camera need: `beam`
+ * for the spinal lance, `pulse` for the shield discharge, and `vapour` for the
+ * wingtip condensation a hard manoeuvre pulls out of the air.
  */
 export type EffectKind =
   | 'explosion'
@@ -158,7 +191,10 @@ export type EffectKind =
   | 'smoke'
   | 'shield'
   | 'flak'
-  | 'flash';
+  | 'flash'
+  | 'beam'
+  | 'pulse'
+  | 'vapour';
 
 export type EffectColor = 'cyan' | 'amber' | 'red' | 'white' | 'green';
 
@@ -299,6 +335,30 @@ export interface BossWeakpointHud {
   targetable: boolean;
 }
 
+/**
+ * v0.5: the dreadnought's attack telegraph. The HUD reads this to print the
+ * incoming attack, its countdown and — the part that makes the fight a fight —
+ * the counter the player is supposed to fly.
+ */
+export interface BossAttackHud {
+  id: BossAttackId;
+  code: string;
+  labelEn: string;
+  labelZh: string;
+  counterEn: string;
+  counterZh: string;
+  /** Three-letter code of the manoeuvre that beats it, when one does. */
+  counterCode: string | null;
+  phase: BossAttackPhase;
+  /** 0..1 through the telegraph, then through the active window. */
+  progress: number;
+  /** Seconds until the telegraph resolves, or until the effect ends. */
+  remaining: number;
+  severity: 'caution' | 'warning' | 'critical';
+  /** How many times this attack has been used this sortie. */
+  uses: number;
+}
+
 export interface BossHud {
   id: string;
   callsign: string;
@@ -307,6 +367,17 @@ export interface BossHud {
   hp: number;
   maxHp: number;
   stage: 1 | 2 | 3;
+  /** Localised stage readout, e.g. "护盾完整". */
+  stageLabel: string;
+  stageCode: string;
+  /** Range from the player to the dreadnought's centre, in metres. */
+  distance: number;
+  /** True while the player is inside the hull's lethal envelope. */
+  tooClose: boolean;
+  /** v0.5 attack telegraph, or null between attacks. */
+  attack: BossAttackHud | null;
+  /** Seconds until the next attack is chosen; null while one is running. */
+  nextIn: number | null;
   weakpoints: BossWeakpointHud[];
 }
 
@@ -540,6 +611,8 @@ export interface CockpitSnapshot {
   operation: string;
   titleEn: string;
   titleZh: string;
+  /** v0.5: which camera the player is riding in. */
+  view: ViewMode;
   flight: {
     speed: number;
     knots: number;
@@ -648,7 +721,12 @@ export type SimEvent =
   | { type: 'auto-engage'; enabled: boolean }
   | { type: 'auto-play'; maneuver: ManeuverId; playId: string; demonstration: boolean }
   | { type: 'auto-retry' }
-  | { type: 'auto-complete' };
+  | { type: 'auto-complete' }
+  /* --- v0.5 --- */
+  | { type: 'boss-attack'; id: BossAttackId; phase: BossAttackPhase }
+  | { type: 'boss-lance-fire'; origin: Vec3; axis: Vec3 }
+  | { type: 'hull-impact'; part: string; damage: number }
+  | { type: 'view-change'; mode: ViewMode };
 
 export type SimListener = (event: SimEvent) => void;
 

@@ -176,6 +176,33 @@
   letter-spacing: 0.08em;
 }
 
+/* v0.5 camera readout in the mission bar — a button, because the view is
+   something you change mid-fight far more often than once in a menu. */
+.mission-bar__view {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid rgba(99, 243, 255, 0.22);
+  background: rgba(8, 22, 30, 0.6);
+  color: rgba(134, 163, 174, 0.72);
+  font-size: 7px;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+
+.mission-bar__view:hover {
+  color: var(--tv-ice);
+  border-color: rgba(99, 243, 255, 0.6);
+}
+
+.mission-bar__view.is-chase {
+  color: var(--tv-cyan);
+  border-color: var(--tv-cyan);
+  background: rgba(16, 48, 58, 0.72);
+}
+
 .mission-bar__signal.is-live {
   color: rgba(99, 243, 255, 0.7);
 }
@@ -455,6 +482,108 @@
   font-family: var(--tv-font-text);
   font-size: 9px;
   line-height: 1.5;
+}
+
+/* --- v0.5 LEVIATHAN attack book ------------------------------------- */
+.brief-panel__threat-db {
+  margin-top: 12px;
+  border: 1px solid rgba(255, 77, 90, 0.3);
+  background: rgba(20, 8, 10, 0.5);
+}
+
+.brief-panel__threat-db-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(255, 77, 90, 0.22);
+  color: var(--tv-red);
+  font-size: 7px;
+  letter-spacing: 0.16em;
+}
+
+.brief-panel__threat-db ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.brief-panel__threat-db li {
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+}
+
+.brief-panel__threat-db li:last-child {
+  border-bottom: 0;
+}
+
+.brief-panel__threat-code {
+  padding: 2px 0;
+  border: 1px solid rgba(255, 181, 71, 0.5);
+  color: var(--tv-amber);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.brief-panel__threat-db li > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.brief-panel__threat-db strong {
+  color: var(--tv-ice);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.brief-panel__threat-db small {
+  color: rgba(134, 163, 174, 0.6);
+  font-size: 7px;
+  letter-spacing: 0.12em;
+}
+
+.brief-panel__threat-db em {
+  color: var(--tv-cyan);
+  font-family: var(--tv-font-text);
+  font-size: 9px;
+  font-style: normal;
+  text-align: right;
+  max-width: 42%;
+}
+
+.brief-panel__camera {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 7px 9px;
+  border-left: 2px solid var(--tv-cyan);
+  background: linear-gradient(90deg, rgba(10, 46, 56, 0.5), rgba(10, 20, 26, 0.1));
+  color: var(--tv-cyan);
+}
+
+.brief-panel__camera > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.brief-panel__camera strong {
+  font-size: 7px;
+  letter-spacing: 0.14em;
+}
+
+.brief-panel__camera span {
+  color: rgba(190, 232, 240, 0.7);
+  font-family: var(--tv-font-text);
+  font-size: 9px;
+  line-height: 1.55;
 }
 
 .brief-panel__controls {
@@ -1335,6 +1464,29 @@
 .dialog-panel__tip svg {
   flex: 0 0 auto;
   color: var(--tv-amber);
+}
+
+/* v0.5: the attack book inside a help tip — one line per LEVIATHAN attack. */
+.dialog-panel__tip > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.help-attack {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 6px;
+  color: rgba(255, 220, 170, 0.72);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+.help-attack b {
+  color: var(--tv-amber);
+  font-size: 8px;
+  letter-spacing: 0.1em;
 }
 
 .dialog-panel__actions {

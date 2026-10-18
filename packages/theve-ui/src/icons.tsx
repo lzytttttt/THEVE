@@ -196,3 +196,41 @@ export const IconWave = createIcon(
     <path d="M12 3 15 9h-6l3-6Z" />
   </>,
 );
+
+/**
+ * v0.5 camera. `cockpit` draws the HUD frame; `chase` draws the same aircraft
+ * from behind. Two silhouettes rather than a generic "camera" glyph, because
+ * the deck button has to say which way you are about to be looking.
+ */
+export function IconView({ size = 16, mode = 'cockpit', ...rest }: IconProps & { mode?: 'cockpit' | 'chase' }) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="square"
+      strokeLinejoin="miter"
+      className="tv-icon"
+      {...rest}
+    >
+      {mode === 'cockpit' ? (
+        <>
+          <path d="M3 18V9l9-5 9 5v9" />
+          <path d="M3 18h18" />
+          <path d="M9 18v-6h6v6" />
+          <path d="M12 2v2" />
+        </>
+      ) : (
+        <>
+          <path d="m12 6 2 5 8 3.6v1.6L14 15l-1 4.4 1.8 1.6h-5.6L11 19.4 10 15l-8-.8v-1.6L10 9l2-3Z" />
+          <path d="M4.5 5.5a9 9 0 0 1 15 0" strokeDasharray="2.4 2.2" />
+        </>
+      )}
+    </svg>
+  );
+}

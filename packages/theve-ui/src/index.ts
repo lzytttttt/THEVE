@@ -4,6 +4,41 @@ export * from './primitives';
 export * from './icons';
 export * from './hud';
 export type * from './sim/types';
+export { isViewMode, VIEW_LABEL, VIEW_ORDER } from './sim/types';
+export {
+  BOSS_ANCHOR,
+  BOSS_ATTACK_ORDER,
+  BOSS_ATTACKS,
+  BOSS_HULL,
+  BOSS_HULL_RADIUS,
+  BOSS_LANCE_MUZZLE,
+  BOSS_STAGE_LABEL,
+  BOSS_TURRETS,
+  BOSS_VISUAL_IDLE,
+  BOSS_VLS,
+  bossAnchor,
+  bossAttack,
+  bossAttackPool,
+  bossCountdown,
+  bossHitTest,
+  bossHullPushOut,
+  bossSegmentHit,
+  fromBossLocal,
+  lanceHits,
+  lanceOffset,
+  lanceRadius,
+  toBossLocal,
+  LANCE_BEAM_DEG,
+} from './sim/boss';
+export type {
+  BossAttackDefinition,
+  BossAttackId,
+  BossAttackPhase,
+  BossHullBox,
+  BossHullHit,
+  BossPose,
+  BossVisualState,
+} from './sim/boss';
 export { sunsetSpearScenario, createDemoScenario } from './sim/scenario';
 export { CockpitEngine } from './sim/engine';
 export {
@@ -80,6 +115,7 @@ export type {
   CockpitQuality,
   CockpitSettingsValue,
 } from './sim/CockpitProvider';
+export type { AutoPilotHazard } from './sim/autopilot';
 export { useCockpitControls } from './sim/useCockpitControls';
 export type { CockpitControlOptions } from './sim/useCockpitControls';
 export { AudioEngine } from './audio/AudioEngine';

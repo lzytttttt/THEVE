@@ -168,6 +168,114 @@ try {
   await page.waitForTimeout(1400);
   await shot('04-boss-1920');
 
+  /* ------------------------------------------------------------------ */
+  /* v0.5 — the third-person camera, the boss attack telegraph, flares   */
+  /* ------------------------------------------------------------------ */
+  // The camera is a first-class control now, so the smoke test drives it both
+  // ways and screenshots the outside view.
+  await page.evaluate(() => window.__THEVE__?.view('chase'));
+  await page.waitForTimeout(1200);
+  const chaseView = await page.evaluate(() => window.__THEVE__?.view());
+  console.log('view after toggle:', chaseView);
+  await shot('23-chase-view-1920');
+
+  // A scripted manoeuvre from outside: the boom pulls back and the wingtip
+  // vapour comes out, which is the whole reason the outside camera exists.
+  await page.keyboard.press('v');
+  await page.waitForTimeout(760);
+  await shot('24-chase-manoeuvre-1920');
+  await page.waitForTimeout(2200);
+
+  // The flare salvo, caught on the way out of the dispenser. The outside camera
+  // sits dead astern, so the cloud reads as a bloom around the tail — which is
+  // exactly how a countermeasure looks from the aircraft that dropped it.
+  await page.evaluate(() => {
+    const engine = window.__THEVE__.engine;
+    engine.flight.roll = 0.6;
+    engine.flight.pitch = 0.06;
+  });
+  await page.waitForTimeout(260);
+  await page.evaluate(() => window.__THEVE__?.engine.flare());
+  await page.waitForTimeout(280);
+  await shot('25-flare-salvo-1920');
+
+  // Park off the dreadnought's bow quarter: the shield dome, the closed reactor
+  // maw and the two outrigger nodes are the v0.5 model read.
+  await page.evaluate(() => {
+    const engine = window.__THEVE__.engine;
+    const boss = engine.getBossEntity();
+    if (!boss) return;
+    const forward = { x: -Math.sin(boss.yaw), y: 0, z: -Math.cos(boss.yaw) };
+    engine.flight.position = {
+      x: boss.position.x + forward.x * 1000,
+      y: boss.position.y + 220,
+      z: boss.position.z + forward.z * 1000,
+    };
+    engine.flight.yaw = boss.yaw + Math.PI;
+    engine.flight.pitch = -0.14;
+    engine.flight.roll = 0;
+    engine.flight.speed = 180;
+    engine.setThrottle(0.5);
+    engine.flight.hp = 100;
+  });
+  await page.waitForTimeout(1100);
+  await shot('26-boss-shielded-1920');
+
+  // Force the exposed stage and wait for the spinal lance to telegraph: the
+  // attack banner, the countdown and the counter hint are the fight's read.
+  const lance = await page.evaluate(() => {
+    const api = window.__THEVE__;
+    if (!api) return null;
+    const engine = api.engine;
+    for (const entity of engine.getEntities()) {
+      if (entity.kind === 'weakpoint' && entity.weakpoint?.key !== 'core') {
+        engine.destroyWeakpoint(entity);
+      }
+    }
+    for (let index = 0; index < 4000; index += 1) {
+      const snapshot = api.step(0.05);
+      engine.flight.hp = 100;
+      const attack = snapshot.boss?.attack;
+      if (attack?.id === 'lance' && attack.phase === 'telegraph' && attack.progress > 0.55) {
+        return { code: attack.code, phase: attack.phase, counter: attack.counterZh };
+      }
+      if (attack?.id === 'lance' && attack.phase === 'active') {
+        return { code: attack.code, phase: attack.phase, counter: attack.counterZh };
+      }
+    }
+    return null;
+  });
+  // Reframe onto the dreadnought's beam so the telegraph, the charging lance and
+  // the ship are all in one shot. The charge runs for three seconds, so there is
+  // plenty of time left when the reposition lands.
+  await page.evaluate(() => {
+    const engine = window.__THEVE__.engine;
+    const boss = engine.getBossEntity();
+    if (!boss) return;
+    const forward = { x: -Math.sin(boss.yaw), y: 0, z: -Math.cos(boss.yaw) };
+    const right = { x: Math.cos(boss.yaw), y: 0, z: -Math.sin(boss.yaw) };
+    engine.flight.position = {
+      x: boss.position.x + forward.x * 1500 + right.x * 420,
+      y: boss.position.y + 150,
+      z: boss.position.z + forward.z * 1500 + right.z * 420,
+    };
+    engine.flight.yaw = Math.atan2(
+      -(boss.position.x - engine.flight.position.x),
+      -(boss.position.z - engine.flight.position.z),
+    );
+    engine.flight.pitch = -0.05;
+    engine.flight.roll = 0;
+    engine.flight.speed = 170;
+    engine.setThrottle(0.45);
+    engine.flight.hp = 100;
+  });
+  await page.waitForTimeout(180);
+  await shot('27-boss-lance-1920');
+  console.log('lance telegraph captured:', JSON.stringify(lance));
+
+  await page.evaluate(() => window.__THEVE__?.view('cockpit'));
+  await page.waitForTimeout(500);
+
   await page.getByRole('button', { name: '暂停' }).click();
   await page.waitForTimeout(450);
   await shot('05-pause-1920');
@@ -316,7 +424,7 @@ try {
   await page.waitForTimeout(600);
   await shot('13-systems-390');
 
-  console.log(JSON.stringify({ consoleErrors, pageErrors, muteBefore, muteAfter }, null, 2));
+  console.log(JSON.stringify({ consoleErrors, pageErrors, muteBefore, muteAfter, chaseView, lance }, null, 2));
   if (consoleErrors.length || pageErrors.length) process.exitCode = 1;
 } finally {
   await browser.close();

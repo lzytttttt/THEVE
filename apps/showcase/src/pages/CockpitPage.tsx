@@ -10,7 +10,8 @@ import {
   formatClock,
 } from '@theve/ui';
 import { CockpitViewport } from '@theve/ui/three';
-import { CockpitHud, CockpitControls, IconButton } from '@theve/ui';import { IconExpand, IconHelp, IconPause, IconSoundOff, IconSoundOn, cx } from '@theve/ui';
+import { CockpitHud, CockpitControls, IconButton, IconView, VIEW_LABEL, cx } from '@theve/ui';
+import { IconExpand, IconHelp, IconPause, IconSoundOff, IconSoundOn } from '@theve/ui';
 import { Brand, BrandRule } from '../brand';
 import { useFps } from '../useFps';
 import type { Route } from '../App';
@@ -131,6 +132,11 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
     onAutoPilot: (engaged) => {
       if (engaged) setOverlay('none');
     },
+    onView: () => {
+      // The camera swap is visible enough on its own; just make sure the
+      // briefing or debrief is not left sitting over it.
+      setOverlay((current) => (current === 'pause' || current === 'help' ? current : 'none'));
+    },
   });
 
   useEffect(() => {
@@ -189,6 +195,11 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
       },
       phase: () => engine.phase,
       engine,
+      /** v0.5: set the camera without a keystroke, for screenshots and smoke tests. */
+      view: (mode?: 'cockpit' | 'chase') => {
+        if (mode) actions.setView(mode);
+        return engine.getView();
+      },
       /** v0.4: engage AUTO ACE without a user gesture, for screenshots and smoke tests. */
       autoAce: (enabled = true) => {
         setOverlay('none');
@@ -262,6 +273,18 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
           <span className="mission-bar__coords">36°12′N 142°08′E</span>
         </div>
         <div className="mission-bar__right">
+          {/* v0.5: the camera is a first-class piece of the sortie state, so it
+              gets a readout next to the data link rather than hiding in a menu. */}
+          <button
+            type="button"
+            className={cx('mission-bar__view', snapshot.view === 'chase' && 'is-chase')}
+            onClick={() => actions.toggleView()}
+            aria-label={`切换视角，当前 ${VIEW_LABEL[snapshot.view].zh}`}
+            title="切换视角 / O"
+          >
+            <IconView size={14} mode={snapshot.view} />
+            <span className="tv-mono">{VIEW_LABEL[snapshot.view].code}</span>
+          </button>
           <span className="mission-bar__link tv-mono">
             <i aria-hidden="true" /> LINK OK
           </span>
@@ -309,6 +332,8 @@ function CockpitExperience({ onNavigate }: CockpitPageProps) {
           setQuality={settings.setQuality}
           invertPitch={settings.invertPitch}
           setInvertPitch={settings.setInvertPitch}
+          view={settings.view}
+          setView={settings.setView}
           assists={settings.assists}
           assistMaster={snapshot.assist.master}
           setAssist={settings.setAssist}

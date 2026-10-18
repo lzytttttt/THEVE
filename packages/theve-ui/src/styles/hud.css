@@ -1814,6 +1814,206 @@
   background: linear-gradient(90deg, #4b4b4b, #777);
 }
 
+/* --- v0.5 attack telegraph ------------------------------------------ */
+/* The single most important HUD element of the boss fight: what is coming,
+   how long there is, and which way to break. */
+.tv-boss__condition {
+  color: rgba(134, 163, 174, 0.6);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+}
+
+.tv-boss__condition.is-close {
+  color: var(--tv-amber);
+  animation: tv-blink 0.9s steps(2, jump-none) infinite;
+}
+
+.tv-boss__attack {
+  margin-top: 6px;
+  padding: 6px 7px 7px;
+  border: 1px solid var(--tv-line-amber);
+  border-left-width: 3px;
+  background: linear-gradient(180deg, rgba(58, 34, 8, 0.85), rgba(20, 12, 4, 0.9));
+  animation: tv-boss-attack-in 180ms ease-out;
+}
+
+.tv-boss__attack.is-critical {
+  border-color: var(--tv-line-red);
+  background: linear-gradient(180deg, rgba(66, 16, 20, 0.88), rgba(22, 6, 9, 0.92));
+}
+
+.tv-boss__attack.is-active {
+  animation: tv-boss-attack-live 320ms steps(2, jump-none) infinite;
+}
+
+.tv-boss__attack-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tv-boss__attack-code {
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  color: var(--tv-red);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+}
+
+.tv-boss__attack-head strong {
+  color: var(--tv-ice);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.tv-boss__attack-en {
+  color: rgba(232, 248, 252, 0.42);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+}
+
+.tv-boss__attack-head em {
+  margin-left: auto;
+  color: var(--tv-amber);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.tv-boss__attack.is-critical .tv-boss__attack-head em {
+  color: var(--tv-red);
+}
+
+.tv-boss__attack-bar {
+  display: block;
+  position: relative;
+  height: 3px;
+  margin: 5px 0;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.tv-boss__attack-progress {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ffb547, #ff7a3d);
+}
+
+.tv-boss__attack-progress.is-active {
+  background: linear-gradient(90deg, #ff4d5a, #ffb547);
+}
+
+.tv-boss__attack-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.tv-boss__attack-counter span {
+  flex: 0 0 auto;
+  color: var(--tv-cyan);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+}
+
+.tv-boss__attack-counter p {
+  margin: 0;
+  color: rgba(232, 248, 252, 0.82);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.tv-boss__standby {
+  margin: 5px 0 0;
+  color: rgba(134, 163, 174, 0.5);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+}
+
+@keyframes tv-boss-attack-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+
+@keyframes tv-boss-attack-live {
+  50% {
+    border-left-color: rgba(255, 77, 90, 0.2);
+  }
+}
+
+/* --- v0.5 camera switch --------------------------------------------- */
+.tv-view {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  position: relative;
+}
+
+.tv-view__item {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 4px;
+  border: 1px solid var(--tv-line);
+  background: rgba(10, 20, 28, 0.7);
+  color: var(--tv-mute);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+
+.tv-view__item em {
+  color: rgba(134, 163, 174, 0.5);
+  font-size: 7px;
+  font-style: normal;
+  letter-spacing: 0.12em;
+}
+
+.tv-view__item:hover {
+  color: var(--tv-ice);
+  border-color: rgba(99, 243, 255, 0.5);
+}
+
+.tv-view__item.is-active {
+  color: var(--tv-cyan);
+  border-color: var(--tv-cyan);
+  background: rgba(16, 48, 58, 0.75);
+}
+
+.tv-view__item.is-active em {
+  color: rgba(99, 243, 255, 0.7);
+}
+
+.tv-view .tv-keycap {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  pointer-events: none;
+}
+
+/* Outside the cockpit the glass overlay is wrong: there is no canopy between
+   the camera and the sky. */
+.tv-cockpit[data-view='chase'] .tv-cockpit__glass {
+  opacity: 0.24;
+  mix-blend-mode: normal;
+}
+
+.tv-cockpit[data-view='chase'] .tv-cockpit__glass::before {
+  opacity: 0.18;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv-boss__attack,
+  .tv-boss__attack.is-active,
+  .tv-boss__condition.is-close {
+    animation: none;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Altitude warning, threat, readouts                                  */
 /* ------------------------------------------------------------------ */
@@ -1899,9 +2099,9 @@
    * the modules also have to be allowed to give way. Without shrink the flex row
    * overflowed its own clip-path and silently pushed the utility column (mute,
    * assist) outside the panel — visible, but on top of the canvas and therefore
-   * unclickable.
+   * unclickable. v0.5 added the camera switch, so the budget grew again.
    */
-  width: min(1240px, calc(100vw - 30px));
+  width: min(1380px, calc(100vw - 30px));
   padding: 7px;
   transform: translateX(-50%);
   background:
@@ -1969,6 +2169,17 @@
   min-width: 128px;
   display: flex;
   flex-direction: column;
+}
+
+.tv-controls__view {
+  flex: 0 1 158px;
+  min-width: 116px;
+  display: flex;
+  flex-direction: column;
+}
+
+.tv-controls__view .tv-view {
+  flex: 1 1 auto;
 }
 
 .tv-controls__auto .tv-auto-btn {
@@ -3209,6 +3420,9 @@
   .tv-controls__auto {
     flex-basis: 158px;
   }
+  .tv-controls__view {
+    flex-basis: 138px;
+  }
   .tv-maneuvers__grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -3352,6 +3566,12 @@
   .tv-controls__aids {
     flex-basis: 96px;
   }
+  .tv-controls__auto {
+    flex-basis: 148px;
+  }
+  .tv-controls__view {
+    flex-basis: 124px;
+  }
   .tv-maneuver__zh {
     display: none;
   }
@@ -3418,6 +3638,12 @@
   }
   .tv-controls__aids {
     flex: 1 1 140px;
+  }
+  .tv-controls__auto {
+    flex: 1 1 150px;
+  }
+  .tv-controls__view {
+    flex: 1 1 130px;
   }
   .tv-maneuvers__grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3571,6 +3797,12 @@
   }
   .tv-controls__arms {
     flex-basis: 176px;
+  }
+  .tv-controls__view {
+    flex-basis: 108px;
+  }
+  .tv-view__item em {
+    display: none;
   }
   .tv-arms {
     grid-template-columns: 1fr;

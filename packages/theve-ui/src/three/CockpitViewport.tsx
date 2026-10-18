@@ -46,6 +46,7 @@ export function CockpitViewport({ className, quality, onReady }: CockpitViewport
     <div
       className={cx('tv-cockpit', degraded && 'tv-cockpit--degraded', className)}
       data-quality={resolved}
+      data-view={settings.view}
     >
       <div className="tv-cockpit__sky" aria-hidden="true" />
       <div ref={hostRef} className="tv-cockpit__stage" aria-hidden="true" />

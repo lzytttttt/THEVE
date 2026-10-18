@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useCockpitActions, useCockpitEngine } from './CockpitProvider';
 import { MANEUVERS } from './maneuvers';
-import type { ManeuverId } from './types';
+import type { ManeuverId, ViewMode } from './types';
 
 export interface CockpitControlOptions {
   enabled?: boolean;
@@ -12,6 +12,8 @@ export interface CockpitControlOptions {
   onRestart?: () => void;
   /** v0.4: fired after `G` hands the sortie to the performer (or takes it back). */
   onAutoPilot?: (engaged: boolean) => void;
+  /** v0.5: fired after `O` swaps the camera. */
+  onView?: (mode: ViewMode) => void;
 }
 
 const MOVEMENT_KEYS = new Set([
@@ -173,6 +175,12 @@ export function useCockpitControls(options: CockpitControlOptions = {}): void {
           event.preventDefault();
           releaseAll();
           optionsRef.current.onAutoPilot?.(actions.toggleAutoPilot());
+          break;
+        case 'KeyO':
+          // v0.5 camera. `C` and `V` are already control-surface inputs, so the
+          // view toggle lives on `O` (OUTSIDE) instead of fighting a manoeuvre.
+          event.preventDefault();
+          optionsRef.current.onView?.(actions.toggleView());
           break;
         case 'Digit1':
           actions.selectWeapon('aam');

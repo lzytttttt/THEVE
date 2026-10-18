@@ -13,6 +13,7 @@ import { CockpitEngine } from './engine';
 import { sunsetSpearScenario } from './scenario';
 import { DEFAULT_ASSISTS, normalizeAssists } from './assists';
 import { isManeuverId } from './maneuvers';
+import { isViewMode } from './types';
 import type {
   AssistId,
   AssistSettings,
@@ -20,6 +21,7 @@ import type {
   ControlInput,
   ManeuverId,
   Scenario,
+  ViewMode,
   WeaponId,
 } from './types';
 
@@ -60,6 +62,9 @@ export interface CockpitActions {
   /** v0.4: one switch hands the whole sortie to the performer (key `G`). */
   toggleAutoPilot: () => boolean;
   setAutoPilot: (enabled: boolean) => void;
+  /** v0.5: swap between the cockpit and the third-person chase camera (key `O`). */
+  toggleView: () => ViewMode;
+  setView: (mode: ViewMode) => void;
 }
 
 export interface CockpitAudio {
@@ -77,6 +82,9 @@ export interface CockpitSettingsValue {
   setQuality: (quality: CockpitQuality) => void;
   invertPitch: boolean;
   setInvertPitch: (invert: boolean) => void;
+  /** v0.5 camera mode, mirrored from the engine so the DOM layer can follow. */
+  view: ViewMode;
+  setView: (mode: ViewMode) => void;
   assists: AssistSettings;
   /** True when the master switch is closed and at least one aid is enabled. */
   assistsActive: boolean;
@@ -90,6 +98,7 @@ interface StoredSettings {
   volume: number;
   quality: CockpitQuality;
   invertPitch: boolean;
+  view: ViewMode;
   assists: AssistSettings;
   assistMaster: boolean;
 }
@@ -100,6 +109,7 @@ const DEFAULT_SETTINGS: StoredSettings = {
   volume: 0.65,
   quality: 'auto',
   invertPitch: false,
+  view: 'cockpit',
   assists: { ...DEFAULT_ASSISTS },
   assistMaster: true,
 };
@@ -121,6 +131,7 @@ function loadSettings(): StoredSettings {
           ? parsed.quality
           : DEFAULT_SETTINGS.quality,
       invertPitch: Boolean(parsed.invertPitch),
+      view: isViewMode(parsed.view) ? parsed.view : DEFAULT_SETTINGS.view,
       assists: normalizeAssists(parsed.assists),
       assistMaster:
         typeof parsed.assistMaster === 'boolean'
@@ -176,6 +187,7 @@ export function CockpitProvider({
   useEffect(() => {
     engine.setAssists(settingsRef.current.assists);
     engine.setAssistMaster(settingsRef.current.assistMaster);
+    engine.setView(settingsRef.current.view);
   }, [engine]);
 
   const startAudio = useCallback(async () => {
@@ -329,6 +341,15 @@ export function CockpitProvider({
         engine.setAutoPilot(enabled);
         if (enabled) startIfAudible();
       },
+      toggleView: () => {
+        const mode = engine.toggleView();
+        setSettings((current) => ({ ...current, view: mode }));
+        return mode;
+      },
+      setView: (mode) => {
+        engine.setView(mode);
+        setSettings((current) => ({ ...current, view: mode }));
+      },
     }),
     [engine, startIfAudible],
   );
@@ -339,6 +360,13 @@ export function CockpitProvider({
   const setInvertPitch = useCallback((invertPitch: boolean) => {
     setSettings((current) => ({ ...current, invertPitch }));
   }, []);
+  const setView = useCallback(
+    (view: ViewMode) => {
+      engine.setView(view);
+      setSettings((current) => ({ ...current, view }));
+    },
+    [engine],
+  );
   const setAssist = useCallback(
     (id: AssistId, enabled: boolean) => {
       engine.setAssist(id, enabled);
@@ -395,6 +423,8 @@ export function CockpitProvider({
       setQuality,
       invertPitch: settings.invertPitch,
       setInvertPitch,
+      view: settings.view,
+      setView,
       assists: settings.assists,
       assistsActive:
         settings.assistMaster && Object.values(settings.assists).some(Boolean),
@@ -406,7 +436,7 @@ export function CockpitProvider({
       },
       setAllAssists: setAssistsForAll,
     }),
-    [settings.quality, settings.invertPitch, settings.assists, settings.assistMaster, setQuality, setInvertPitch, setAssist, setAssistsForAll],
+    [settings.quality, settings.invertPitch, settings.view, settings.assists, settings.assistMaster, setQuality, setInvertPitch, setView, setAssist, setAssistsForAll],
   );
 
   return (

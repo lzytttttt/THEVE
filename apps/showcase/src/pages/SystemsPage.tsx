@@ -145,6 +145,25 @@ const SAMPLE_BOSS: BossHud = {
   hp: 340,
   maxHp: 600,
   stage: 2,
+  stageLabel: '护盾破损',
+  stageCode: 'BREACHED',
+  distance: 1840,
+  tooClose: false,
+  nextIn: null,
+  attack: {
+    id: 'lance',
+    code: 'LANCE',
+    labelEn: 'SPINAL LANCE',
+    labelZh: '主炮照射',
+    counterEn: 'Leave the gun axis — barrel roll or high-G turn',
+    counterZh: '横向脱离炮轴 — 桶滚或高G急转',
+    counterCode: 'BAR',
+    phase: 'telegraph',
+    progress: 0.62,
+    remaining: 1.1,
+    severity: 'critical',
+    uses: 2,
+  },
   weakpoints: [
     { key: 'shieldL', label: 'SHIELD NODE A', hp: 0, maxHp: 120, destroyed: true, targetable: false },
     { key: 'shieldR', label: 'SHIELD NODE B', hp: 120, maxHp: 120, destroyed: false, targetable: true },
@@ -236,7 +255,7 @@ export function SystemsPage({ onNavigate }: SystemsPageProps) {
           </a>
         </nav>
         <div className="systems-head__meta">
-          <span className="systems-head__build tv-mono">V0.4.0 / TACS-8</span>
+          <span className="systems-head__build tv-mono">V0.5.0 / TACS-8</span>
           <Button variant="primary" kbd="↗" onClick={() => onNavigate('cockpit')}>
             进入座舱
           </Button>

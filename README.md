@@ -14,6 +14,11 @@ THEVE // TACS-8 把电影化空战的第一人称座舱拆解成一套 React + T
 不想自己飞的时候，按 **`G`** 开启 **全自动皇牌模式（AUTO ACE）**：飞控接管，
 自己升空、自己选目标、在最合适的时机做眼镜蛇、库尔比特与殷麦曼，把整场任务打完。
 
+v0.5 把它变成三个问题的合集：LEVIATHAN 现在有**实体碰撞体积**、四种必须用机动回答的攻击
+（近防炮 / 垂发齐射 / 护盾脉冲 / 主炮照射）；热焰弹重做成四发带惯性的燃烧弹体，
+任何从 130 m 内掠过的导弹都会被引开；按 **`O`** 可以切到**第三人称跟随视角**，
+看到自己那架 F-08 在做什么机动。
+
 所有美术、机体、巨兽、文案与声音都是原创 / 程序化生成；本项目不使用任何官方素材。
 
 ---
@@ -54,15 +59,52 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 4. **FIRST FLIGHT CHECK / 简要操作说明** — 进入任务后左下角出现的 7 项检查单，会随着你真的做出动作逐条打勾并自动收起。
 5. **DOGFIGHT / 制空 · 三波** — 先锋（截击机 + 侦察机）→ 主队（重装机 + 王牌）→ 指挥编队（指挥机 + 电子战机）。
    每波进场都会补给弹药，AWACS 会同时报出机型编成与应对重点。
-6. **LEVIATHAN / 战争巨兽** — 清空编队后触发；摧毁两具护盾节点，再攻击暴露的反应堆核心。
-   护盾还在时它会持续放出带机炮的无人机，护盾一掉就停止。
+6. **LEVIATHAN / 战争巨兽** — 清空编队后触发。摧毁两具舷外挂架上的护盾节点，再突入舰艏的反应堆口。
+   它是一道**问答题**：近防炮、垂发齐射、护盾脉冲、主炮照射各有唯一答案（见下）。
+   舰体是实心的——撞上去掉 45% 结构；炮弹打在装甲上只会溅出冷色火花。
 7. **DEBRIEF / 结算** — 评分 S / A / B / C、命中率、战损、任务时间与最佳评级（localStorage）。
 
-任务失败后可直接重试；暂停菜单提供画质、反转俯仰、辅助驾驶逐项开关、音量与静音设置。
+任务失败后可直接重试；暂停菜单提供画质、反转俯仰、**视角**、辅助驾驶逐项开关、音量与静音设置。
 
 ---
 
-## 全自动皇牌模式（v0.4）
+## LEVIATHAN 攻击机制（v0.5）
+
+| 代码 | 攻击 | 电报窗口 | 你必须做什么 |
+| --- | --- | --- | --- |
+| `CIWS` | 近防炮拦截 | 0.7 s | 不要正对舰体直线进入 — 侧向掠袭（炮口只覆盖前半球） |
+| `VLS` | 垂直发射齐射 | 1.5 s | `F` 热焰弹，或 `V` 桶滚 — 四发雷达制导 |
+| `PULSE` | 护盾冲击脉冲 | 2.4 s | 在 1.15 km 内盘旋超过 2.4 秒就会被锁定 — 脱离或加速穿出 |
+| `LANCE` | 主炮照射 | 3.0 s | 炮口亮起后横向脱离炮轴 — 桶滚或高G急转（核心暴露后解锁） |
+
+每一次攻击都会在 HUD 右侧的巨兽面板上打出**名称、倒计时进度条和应对提示**，
+同时在电台里由 AWACS 或僚机报出；舰体的动画也和攻击一一对应
+（垂发井发光、主炮口充血、反应堆装甲花瓣张开、近防炮跟着你转）。
+**输给巨兽永远是输了一个决定，而不是被偷袭。**
+
+| 结果 | 触发条件 | 表现 |
+| --- | --- | --- |
+| 撞舰 | 飞进舰体 | 结构 −45%、被沿最近面推出、`HULL STRIKE · 部位` 告警 |
+| 打装甲 | 炮弹扫掠命中舰体 | 冷色火花 + `ARMOUR · 部位`，不计数、不穿透 |
+| 打节点 | 命中护盾节点 / 暴露的核心 | 正常伤害（v0.5 起按目标半径结算命中体积） |
+
+---
+
+## 第三人称跟随视角（v0.5）
+
+按 **`O`**（或屏幕控制台的 VIEW 模块、任务栏右上角的 `CPT/CHS` 按钮）在座舱与外部视角之间切换，
+设置持久化到 localStorage。外部视角渲染 LUMEN 1 本机：鸭翼、外倾双垂尾、
+**跟着操纵杆动的副翼 / 襟翼 / 平尾**、随油门与加力变化的双发尾焰、航行灯，以及座舱里的飞行员。
+
+相机是「吊杆 + 瞄准」：吊杆跟随航向与**被夹紧的俯仰**，再回头看飞机——
+所以做眼镜蛇或库尔比特时镜头会留在原地看飞机竖起来，而不是跟着钻进机身。
+姿态用阻尼跟随，猛机动时飞机会领先镜头一拍；机动期间吊杆额外后拉，
+高 G / 失速 / 脚本机动会拉出**翼尖水汽**。视角只是视图，不是物理模式：
+两种视角下的飞行状态逐位相同（有测试盯着）。
+
+---
+
+## 全自动皇牌模式（v0.4 · v0.5 扩充）
 
 按 **`G`**（或简报页 / 控制台的按钮）一键开启。它**不是外挂**：
 每一帧它写入的都是和你按键时完全相同的俯仰 / 滚转 / 偏航、油门、武器选择与扳机，
@@ -85,6 +127,8 @@ pnpm verify:ui    # Playwright 冒烟 + docs/screenshots；需先运行 dev 或 
 | 敌机从后方高速接近 | 减速板诱敌冲前 |
 | 需要收紧盘旋 | 高G转弯（持续型，不脱离瞄准回路） |
 | 天空安静且有高度余量 | 展示清单里下一个没做过的动作 |
+| **巨兽主炮充能且你正在炮轴上（v0.5）** | **横向脱离炮轴 — 只在真的挡住时才中断攻击航路** |
+| **巨兽护盾脉冲充能且你在 1.15 km 内（v0.5）** | **沿视线方向加速脱离** |
 
 HUD 右侧会出现 **AUTO ACE 状态条**：当前模式、正在做的动作、`DEMO n/7` 展示进度、
 机体状态与当前目标。电台里它有自己的声音（斜体青色），会说出「看好了 — 眼镜蛇机动」。
@@ -107,12 +151,13 @@ HUD 右侧会出现 **AUTO ACE 状态条**：当前模式、正在做的动作�
 | `F` | 热焰弹 |
 | `1` / `2` | 选择 AAM / GUN |
 | `Y` | 辅助驾驶总开关 |
+| `O` | **切换视角（座舱 / 第三人称跟随，v0.5）** |
 | `G` | **全自动皇牌模式总开关（一键自动通关）** |
 | `M` | 静音 |
 | `P` / `Esc` | 暂停 |
 | `H` | 飞行手册 |
 | 鼠标拖拽 | 虚拟驾驶杆 |
-| 屏幕控制台 | 完整触屏可玩：油门、武器、机动、辅助、FIRE、FLARE、TARGET、AUTO ACE |
+| 屏幕控制台 | 完整触屏可玩：油门、武器、机动、辅助、VIEW、FIRE、FLARE、TARGET、AUTO ACE |
 
 ### 敌机编成（v0.4）
 
@@ -148,7 +193,6 @@ HUD 右侧会出现 **AUTO ACE 状态条**：当前模式、正在做的动作�
 按住类机动跟随操纵杆即时生效；一次性机动由飞控按预设剖面接管姿态，动作结束的瞬间把操纵权交回，并自动把姿态归一化回正常包线（俯仰 ±77°）。
 
 ### 辅助驾驶（v0.2，默认开启）
-
 | 代号 | 名称 | 行为 |
 | --- | --- | --- |
 | `ATT` | 姿态辅助 | 松杆时消除滚转漂移；接近平飞时把机翼摆正。压着坡度时不会跟你抢杆 |
@@ -186,6 +230,14 @@ v0.3 起战场本身也在演戏：远景弹幕与曳光弹持续扫过地平线
 爆炸会用一盏池化点光源真的照亮云层。3D 在独立 rAF 中运行，不经过 React；
 模拟以 60Hz 推进，只以 30Hz 向 React 发布快照。
 
+**LEVIATHAN 模型（v0.5）：** 从「一摞盒子」重建为按模拟锚点摆放的完整舰体——
+龙骨、飞行甲板、后掠翼、外挂架上的护盾节点舱、可开合的舰艏装甲花瓣、四座跟随玩家的近防炮、
+会亮的垂发井、舰艏下方的主炮身管、包住全舰的护盾气泡。
+**看到的就是打得到的**：复合碰撞体（`sim/boss.ts`）与模型共用同一组锚点。
+
+**第三人称相机（v0.5）：** 「吊杆 + 瞄准」——吊杆跟随航向与被夹紧的俯仰，再回头看飞机，
+姿态用阻尼跟随，机动期间额外后拉并拉出翼尖水汽。自机 F-08 有可动操纵面、双发尾焰与座舱飞行员。
+
 **飞行模型（v0.2 手感重做）：** 操纵面权限随动压（速度）缩放，滚转用角加速度 + 阻尼产生机翼惯量，
 俯仰走一阶滞后指令，转弯由坡度升力自动协调并叠加滚转协调舵；爬升掉速、俯冲增速，
 拉杆与滚转产生诱导阻力，过载由俯仰角速度与速度实时积分。失速地板 150 m/s，
@@ -201,7 +253,14 @@ D 小调、六个段落（翱翔 / 制空 / 强攻 / 巨兽 / 凯旋 / 挽歌）
 太鼓与弦乐固定音型、程序化生成的厅堂混响，只在小节线上换段。
 音效层同样重做：机炮分瞬态 / 音体 / 机械三层，命中是金属短鸣，
 爆炸按距离延迟并按真实声速衰减高频，导弹掠过时播放多普勒呼啸。
-首次 `LAUNCH` 用户手势才创建 AudioContext；静音、画质与俯仰设置会持久化。
+
+v0.5 的热焰弹是四层：发射器低频闷响（机身总线）、三发金属爆响（左右肩交替声场）、
+**带通从 4200 Hz 扫到 560 Hz 的燃烧嘶声**（1.2–1.8 s，比爆响长 1.4 s），
+以及一条轻得多普勒尾音。巨兽的四种攻击也各有自己的电报音：
+主炮是升调电容啸叫，脉冲是加速的时钟，齐射是液压声加舱盖闷响，近防炮是电机启动的断续敲击；
+主炮开火会压低整条音乐总线 2.4 秒。
+
+首次 `LAUNCH` 用户手势才创建 AudioContext；静音、画质、俯仰与**视角**设置会持久化。
 
 更多设计决策与迭代记录见 [`docs/DESIGN.md`](docs/DESIGN.md)。
 
@@ -251,10 +310,12 @@ HUD 组件均可单独复用；组合版 `CockpitHud` 只是本项目 Showcase �
 - **操纵与辅助（v0.2）**：`ManeuverRail` `ManeuverBanner` `AssistRail` `FlightAidStrip` `LockSteeringCue` `StartupChecklist` `GLoadMeter`
 - **打击反馈（v0.3）**：`HitConfirm` `DamageDirection` `KillTicker` `CombatFeedbackLayer`
 - **关卡敌人与自动驾驶（v0.4）**：`AutoPilotButton` `AutoPilotRail` `WaveTracker`（另有 `AutoPilotButtonView` / `AutoPilotRailView` 两个纯展示版本，供文档页复用）
-- **操作**：`CockpitControls`，内部组合油门、武器、机动、辅助、AUTO ACE、FIRE、热焰弹与目标切换
+- **Boss 战（v0.5）**：`BossBar` 现在带攻击电报面板（名称 / 倒计时进度条 / 应对提示 / 严重度配色）
+- **操作**：`CockpitControls`，内部组合油门、武器、机动、辅助、AUTO ACE、**VIEW**、FIRE、热焰弹与目标切换
 - **模拟**：`CockpitEngine`、`MANEUVERS`、`ASSISTS`、`TUTORIAL_STEPS`、`useCockpit`、`useCockpitActions`、`useCockpitEngine`、`useCockpitSettings`、`useAudio`、`useCockpitControls`
 - **敌机编成（v0.4）**：`ENEMIES` `ENEMY_ORDER` `enemyProfile` `resolveEnemyId` `waveReady` `describeWave` `waveBriefing` `enemyPriority`
 - **自动驾驶（v0.4）**：`solveAutoPilot` `createAutoPilotMemory` `AUTO_MODE_LABEL` `SHOWCASE_PLAYS` `SHOWCASE_ORDER` `autoPilotCondition`
+- **巨兽与视角（v0.5）**：`BOSS_HULL` `BOSS_ANCHOR` `BOSS_ATTACKS` `BOSS_ATTACK_ORDER` `BOSS_TURRETS` `BOSS_VLS` `BOSS_STAGE_LABEL` `bossAttack` `bossAttackPool` `bossHitTest` `bossSegmentHit` `bossHullPushOut` `toBossLocal` `fromBossLocal` `lanceHits` `lanceOffset` `lanceRadius`；`VIEW_ORDER` `VIEW_LABEL` `isViewMode` `IconView`
 - **配乐（v0.3）**：`SCORE_SECTIONS` `SECTION_ORDER` `PHRASES` `selectSection` `phraseForBar` `chordForBar` `degreeToMidi` `midiToFreq`
 - **3D**：`CockpitViewport`、`CockpitScene`（`getDebugInfo()` 供自动化测试）
 - **音频**：`AudioEngine`（可在 Provider 外独立使用）
@@ -263,10 +324,10 @@ HUD 组件均可单独复用；组合版 `CockpitHud` 只是本项目 Showcase �
 
 | 产物 | raw | gzip |
 | --- | --- | --- |
-| 核心入口 `dist/index.js` | 63.7 KB | 14.6 KB |
-| three 入口 `dist/three.js` | 45.1 KB | 12.3 KB |
-| 模拟/音频共享块 | 129.3 KB | 35.4 KB |
-| 样式 `dist/theve.css` | 74.5 KB | 15.0 KB |
+| 核心入口 `dist/index.js` | 78.1 KB | 18.1 KB |
+| three 入口 `dist/three.js` | 64.5 KB | 17.2 KB |
+| 模拟/音频/three 共享块 | 197.9 KB | 54.7 KB |
+| 样式 `dist/theve.css` | 84.4 KB | 16.9 KB |
 
 Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 包单独加载，
 配乐数据表单独成块（`score-*.js`），不进首屏。
@@ -282,8 +343,10 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 - 打击反馈同样不只靠颜色：受击扇区带箭头、命中刻线带伤害数字、击坠记录带文字标签。
   机炮一秒能命中十几次，所以命中标记**不**朗读，只有击坠用 `role="log"` 播报。
 - 支持 `prefers-reduced-motion`：关闭镜头抖动、镜头冲击、扫描线、机动横幅与检查单的切入动画，
-  命中标记也退化为不缩放的静态刻线。
+  命中标记也退化为不缩放的静态刻线，巨兽的攻击电报横幅也停止闪烁。
 - 静音后，导弹告警、通讯与任务结果都有视觉替代。
+- 视角切换是真实 `<button>`（控制台 VIEW 模块、任务栏 CHS 徽标、暂停菜单分段控件），
+  带 `aria-pressed` 与中文 `aria-label`；巨兽电报面板用 `role="status"` 播报。
 - 竖屏提示可继续进入精简模式；横屏手机有专门的短屏 HUD 布局。
 
 ---
@@ -295,7 +358,8 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 | 0.1 | 座舱与世界观 | 设计令牌、HUD 组件、three.js 座舱、程序化音频、SUNSET SPEAR 任务 |
 | 0.2 | 战机操作 | 七种战斗机机动、四项辅助驾驶、进入任务后的简要操作说明、飞行手感重做 |
 | 0.3 | 音效与打击感 | 编曲式生成配乐（六段落 / 十条旋律）、战斗音效分层重做、命中与受击反馈、战场氛围层 |
-| **0.4** | **关卡敌人与全自动通关** | **七种敌机型号与三波编成、敌机机炮与电子干扰、一键全自动皇牌模式（AUTO ACE）与机动展示清单** |
+| 0.4 | 关卡敌人与全自动通关 | 七种敌机型号与三波编成、敌机机炮与电子干扰、一键全自动皇牌模式（AUTO ACE）与机动展示清单 |
+| **0.5** | **Boss 战、热焰弹与第三人称视角** | **LEVIATHAN 重建（复合碰撞体积 + 四种需要机动应对的攻击 + 可动舰体）、四层热焰弹音效与燃烧弹体、按 `O` 切换的第三人称跟随视角与自机模型** |
 
 ---
 
@@ -319,6 +383,10 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 
 | | |
 | --- | --- |
+| ![Chase](docs/screenshots/24-chase-manoeuvre-1920.png) | ![Boss lance](docs/screenshots/27-boss-lance-1920.png) |
+| v0.5 第三人称视角：桶滚中的 F-08、翼尖水汽与巨兽在侧 | v0.5 巨兽主炮电报：名称、倒计时、应对提示与舰体充能 |
+| ![Shielded](docs/screenshots/26-boss-shielded-1920.png) | ![Flare](docs/screenshots/25-flare-salvo-1920.png) |
+| v0.5 LEVIATHAN：护盾气泡、闭合的反应堆装甲口与外挂节点 | v0.5 热焰弹：四发带惯性的燃烧弹体从尾后抛出 |
 | ![Wave inbound](docs/screenshots/19-wave-inbound-1920.png) | ![Auto Ace](docs/screenshots/21-auto-ace-rail-1920.png) |
 | v0.4 波次：`WAVE 2 / 3` 编成表、进场闪示与电台通报 | v0.4 AUTO ACE：右侧状态条、展示进度与当前目标 |
 | ![Showcase](docs/screenshots/20-auto-ace-showcase-1920.png) | ![Threat db](docs/screenshots/22-systems-stage-1920.png) |
@@ -326,11 +394,12 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 | ![Hit confirm](docs/screenshots/14-hit-confirm-1920.png) | ![Splash](docs/screenshots/15-splash-1920.png) |
 | v0.3 命中确认：准星上的刻线、伤害数字与连击计数 | v0.3 击坠：爆炸、碎片与 SPLASH 记录 |
 | ![Boss](docs/screenshots/04-boss-1920.png) | ![Debrief](docs/screenshots/07-debrief-1920.png) |
-| 战争巨兽 LEVIATHAN 与护盾节点 | 任务结算 / S 评级 |
+| LEVIATHAN 与护盾节点（座舱视角） | 任务结算 / S 评级 |
 
-完整截图集（开场、任务简报与一键按钮、启动、制空、波次进场、命中确认、击坠、受击方位、
-高G转弯、眼镜蛇、巨兽、暂停、手册、Boss 登场、任务失败、全自动接管、机动展示、系统图鉴、
-敌机编成图鉴、1366 / 390 / 横屏）在 [`docs/screenshots/`](docs/screenshots/)。
+完整截图集（开场、任务简报与攻击手册、启动、制空、波次进场、命中确认、击坠、受击方位、
+高G转弯、眼镜蛇、第三人称巡航与机动、热焰弹、巨兽护盾与主炮、暂停、手册、Boss 登场、
+任务失败、全自动接管、机动展示、系统图鉴、敌机编成图鉴、1366 / 390 / 横屏）
+在 [`docs/screenshots/`](docs/screenshots/)。
 
 ---
 
@@ -338,8 +407,10 @@ Showcase 首屏在构建时做了路由级 code split；cockpit 路由的 three 
 
 - 这是设计实验与可玩 Showcase，不是《皇牌空战》的复刻；没有官方机体、Logo、音乐或美术。
 - 飞行模型是街机化手感，不是真实气动；没有地形碰撞、多人联机或完整战役。
+- 巨兽有碰撞体积，地形没有：撞进舰体会掉 45% 结构并被推出，撞进地面只会触发低空保护。
 - 机动的姿态剖面是手工调参的脚本，不是真实飞控律；眼镜蛇 / 库尔比特只保留「姿态先动、速度矢量后动」这一条关键特征。
 - 辅助驾驶不会在你正在操作的轴上出力，因此不会替你完成机动，也不会自动开火。
+- 第三人称视角是跟随吊杆，不是自由镜头：不能离开飞机，也不能环绕观察。
 - **AUTO ACE 是「一个会飞的玩家」，不是无敌模式**：它没有传送、没有免伤、没有额外的弹药或分数，
   被击落一样会跳伞。它的优势来自帧级精确的跟踪与不会慌的决策；它的上限仍然是你那架飞机的上限。
 - 桌面 Chromium 为主要目标；Safari / Firefox 尽力兼容。WebGL 不可用时会退化为 CSS 黄昏 + 2D HUD。
